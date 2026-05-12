@@ -1,0 +1,4 @@
+# Lambda Python runtime ships with boto3 and botocore already, so we only need
+# the extra deps not in the runtime. Keep this list as small as possible to
+# minimize cold-start time and ZIP size.
+requests==2.32.3

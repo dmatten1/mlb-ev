@@ -41,12 +41,40 @@ pip install -r requirements.txt
 python -m src.ingest.fetch_odds
 ```
 
-### 3. Run in Docker
+### 3. Run in Docker (one-shot)
 
 ```bash
 docker compose build ingest
 docker compose run --rm ingest
 ```
+
+### 4. Run on a schedule (long-running container)
+
+Fires the same ingest script at **9:00 AM, 12:30 PM, 6:00 PM, 9:00 PM
+America/New_York** every day (DST handled automatically).
+
+```bash
+docker compose up -d --build scheduler   # start in the background
+docker compose logs -f scheduler         # follow output, see each run
+docker compose down                      # stop everything
+```
+
+The scheduler container has to be running at the scheduled times. On macOS that
+means Docker Desktop must be running and the Mac must be awake; if the laptop
+is asleep during a window, that snapshot is skipped (cron does not catch up).
+Four windows/day × ~31 days ≈ **124 requests/month**, well under the 500 cap.
+
+### 5. Run in AWS (laptop can sleep)
+
+The same code can also run as an AWS Lambda triggered by EventBridge Scheduler,
+writing snapshots to S3 instead of local disk. Costs are ~$0/month in the free
+tier. Build the deployment ZIP with:
+
+```bash
+bash infra/build_lambda_zip.sh   # produces build/lambda.zip
+```
+
+See the project notes (or chat history) for the one-time AWS setup walkthrough.
 
 Snapshots land in:
 

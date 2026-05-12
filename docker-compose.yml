@@ -1,4 +1,6 @@
 services:
+  # One-shot job: pulls a single odds snapshot then exits.
+  # Useful for manual testing: `docker compose run --rm ingest`.
   ingest:
     build:
       context: .
@@ -10,3 +12,17 @@ services:
     volumes:
       - ./data:/app/data
     command: ["python", "-m", "src.ingest.fetch_odds"]
+
+  # Long-running service: cron inside the container fires the same ingest
+  # script at 9:00, 12:30, 18:00, 21:00 America/New_York every day.
+  # Start with: `docker compose up -d scheduler`
+  scheduler:
+    build:
+      context: .
+      dockerfile: infra/scheduler.Dockerfile
+    image: mlb-ev/scheduler:latest
+    container_name: mlb-ev-scheduler
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro

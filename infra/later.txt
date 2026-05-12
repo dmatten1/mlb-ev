@@ -1,0 +1,11 @@
+# Today's snapshots
+aws s3 ls "s3://$BUCKET/raw/odds/baseball_mlb/h2h/$(date -u +%F)/"
+
+# Last 24h of Lambda logs
+aws logs tail "/aws/lambda/$FUNCTION_NAME" --since 24h
+
+# Most recent invocation result
+aws lambda get-function --function-name "$FUNCTION_NAME" --query Configuration.LastUpdateStatus
+
+# Pull a snapshot down to inspect
+aws s3 cp "s3://$BUCKET/raw/odds/baseball_mlb/h2h/$(date -u +%F)/<timestamp>.json" -

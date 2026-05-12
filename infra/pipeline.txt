@@ -1,0 +1,50 @@
+                       America/New_York timezone
+                       09:00  12:30  18:00  21:00
+                                  │
+                                  ▼
+                  ┌─────────────────────────────────┐
+                  │   EventBridge Scheduler         │   AWS-managed cron service.
+                  │   group: mlb-ev                 │   4 schedules, DST-aware.
+                  │   ├── odds-0900-et              │
+                  │   ├── odds-1230-et              │
+                  │   ├── odds-1800-et              │
+                  │   └── odds-2100-et              │
+                  └─────────────────────────────────┘
+                                  │
+                                  │  assumes role: mlb-ev-scheduler-role
+                                  │  action:       lambda:InvokeFunction
+                                  ▼
+                  ┌─────────────────────────────────┐
+                  │   Lambda: mlb-ev-ingest-odds    │   Python 3.12, arm64, 256MB.
+                  │   handler: src.ingest.          │   ~500ms cold start, <200ms warm.
+                  │            lambda_handler       │   Bundled deps: requests.
+                  │   env: ODDS_API_KEY,            │   boto3 from runtime.
+                  │        ODDS_S3_BUCKET, ...      │
+                  └─────────────────────────────────┘
+                          │                  │
+                          │ HTTPS GET        │ assumes role: mlb-ev-ingest-lambda-role
+                          ▼                  │ actions:      s3:PutObject (raw/*)
+            ┌──────────────────────┐         │              logs:* (own log group)
+            │ api.the-odds-api.com │         │
+            │ baseball_mlb / h2h   │         │
+            │ free tier: 500/mo    │         │
+            └──────────────────────┘         │
+                          │                  │
+                          │ JSON (~70KB)     │
+                          └─────────┐        │
+                                    ▼        ▼
+                  ┌─────────────────────────────────┐
+                  │   S3: mlb-ev-dcm92              │   versioning ON, public access OFF.
+                  │   raw/odds/baseball_mlb/h2h/    │
+                  │     YYYY-MM-DD/                 │
+                  │       YYYY-MM-DDTHH-MM-SSZ.json │
+                  └─────────────────────────────────┘
+                                    │
+                                    │ (future)
+                                    ▼
+                  ┌─────────────────────────────────┐
+                  │   src/features/ (NOT BUILT YET) │   Read S3, join with MLB-StatsAPI
+                  │   src/train/    (NOT BUILT YET) │   + pybaseball sabermetrics,
+                  │   src/backtest/ (NOT BUILT YET) │   write Parquet to data/processed/.
+                  │   src/serve/    (NOT BUILT YET) │
+                  └─────────────────────────────────┘

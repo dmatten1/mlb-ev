@@ -1,0 +1,12 @@
+services:
+  ingest:
+    build:
+      context: .
+      dockerfile: infra/ingest.Dockerfile
+    image: mlb-ev/ingest:latest
+    container_name: mlb-ev-ingest
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: ["python", "-m", "src.ingest.fetch_odds"]

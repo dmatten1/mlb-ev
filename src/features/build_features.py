@@ -62,8 +62,14 @@ from src.features.handedness import (
     load_hit_type_park_factor_lookup,
 )
 from src.features.lineup_loader import DEFAULT_OUTPUT_ROOT as LINEUPS_ROOT
-from src.features.matchup import LINEUP_PA_WEIGHTS
+from src.features.matchup import LINEUP_PA_WEIGHTS, expected_pitch_run_value_matchup
 from src.features.matchup_xwoba import matchup_xwoba_adjustment
+from src.features.pitch_type_stats import (
+    merge_pitch_type_into_rates,
+    pitch_mix_from_row,
+    pitch_run_values_from_row,
+    pitch_type_cumulative_column_names,
+)
 from src.features.outcomes_loader import load_outcomes
 from src.features.team_defense import (
     build_oaa_lookup, count_games_by_position, infield_outfield_oaa, load_oaa,
@@ -402,6 +408,89 @@ def _attach_matchup_adjustments(
     return games
 
 
+def _attach_pitch_run_matchup(
+    games: pd.DataFrame,
+    lineups_long: pd.DataFrame,
+    cum_b: pd.DataFrame,
+    cum_p: pd.DataFrame,
+    *,
+    suffix: str = "",
+    min_pa: int = BATTER_MIN_PA,
+) -> pd.DataFrame:
+    """Per-slot pitch-type RV matchup vs opposing starter, then lineup composite.
+
+    For each hitter slot, blend ``0.5 * (pitcher_rv + hitter_rv)`` per pitch
+    type using the opposing starter's pitch mix (Statcast ``delta_run_exp``).
+
+    Emits:
+        ``home_off_pitch_rv_matchup{suffix}``,
+        ``away_off_pitch_rv_matchup{suffix}``,
+        ``away_sp_pitch_rv_matchup{suffix}`` (faces home lineup),
+        ``home_sp_pitch_rv_matchup{suffix}`` (faces away lineup).
+    """
+    pitch_cols = pitch_type_cumulative_column_names()
+    min_sp_pa = PITCHER_MIN_PA if not suffix else PITCHER_MIN_PA_ROLLING
+
+    long_with_meta = lineups_long.merge(
+        games[["game_id", "game_date", "home_starter_id", "away_starter_id"]],
+        on="game_id", how="inner",
+    )
+    long_with_meta["opp_sp_id"] = np.where(
+        long_with_meta["side"] == "home",
+        long_with_meta["away_starter_id"],
+        long_with_meta["home_starter_id"],
+    )
+
+    joined = join_features_asof(
+        long_with_meta, cum_b, by="player_id", prefix="",
+        feature_cols=[*pitch_cols, "PA_cum"],
+    )
+    joined = _apply_pa_floor(
+        joined, pitch_cols, pa_col="PA_cum", min_pa=min_pa,
+    )
+    joined = join_features_asof(
+        joined, cum_p, by="opp_sp_id", prefix="opp_sp_",
+        feature_cols=[*pitch_cols, "PA_cum"],
+    )
+    joined = _apply_pa_floor(
+        joined, [f"opp_sp_{c}" for c in pitch_cols],
+        pa_col="opp_sp_PA_cum", min_pa=min_sp_pa,
+    )
+
+    def _row_rv(row: pd.Series) -> float:
+        hitter_rv = pitch_run_values_from_row(row, prefix="")
+        pitcher_mix = pitch_mix_from_row(row, prefix="opp_sp_")
+        pitcher_rv = pitch_run_values_from_row(row, prefix="opp_sp_")
+        return expected_pitch_run_value_matchup(
+            hitter_rv, pitcher_rv, pitcher_mix,
+        )
+
+    joined["pitch_rv_matchup"] = joined.apply(_row_rv, axis=1)
+
+    off_comp = _lineup_composite_long(joined, "pitch_rv_matchup")
+    off_wide = (
+        off_comp.unstack("side")
+        .rename_axis(columns=None)
+        .rename(columns={
+            "home": f"home_off_pitch_rv_matchup{suffix}",
+            "away": f"away_off_pitch_rv_matchup{suffix}",
+        })
+        .reset_index()
+    )
+    sp_wide = (
+        off_comp.unstack("side")
+        .rename_axis(columns=None)
+        .rename(columns={
+            "home": f"away_sp_pitch_rv_matchup{suffix}",
+            "away": f"home_sp_pitch_rv_matchup{suffix}",
+        })
+        .reset_index()
+    )
+    games = games.merge(off_wide, on="game_id", how="left")
+    games = games.merge(sp_wide, on="game_id", how="left")
+    return games
+
+
 # ---------------------------------------------------------------------------
 # Bullpen attachment
 # ---------------------------------------------------------------------------
@@ -655,6 +744,14 @@ def _load_reference_inputs(
                                               window_days=rolling_window_days))
     rol_b = compute_rate_stats(build_rolling(sc, group="batter",
                                               window_days=rolling_window_days))
+    cum_p = merge_pitch_type_into_rates(sc, cum_p, group="pitcher")
+    cum_b = merge_pitch_type_into_rates(sc, cum_b, group="batter")
+    rol_p = merge_pitch_type_into_rates(
+        sc, rol_p, group="pitcher", rolling_window_days=rolling_window_days,
+    )
+    rol_b = merge_pitch_type_into_rates(
+        sc, rol_b, group="batter", rolling_window_days=rolling_window_days,
+    )
 
     hit_type_lookup = None
     batter_handedness = None
@@ -743,6 +840,14 @@ def _compute_feature_columns(games: pd.DataFrame, ref: dict,
             ref["hit_type_lookup"], ref["batter_handedness"],
             suffix="_30d", min_pa=BATTER_MIN_PA_ROLLING,
         )
+    games = _attach_pitch_run_matchup(
+        games, full_long, ref["cum_b"], ref["cum_p"],
+        suffix="", min_pa=BATTER_MIN_PA,
+    )
+    games = _attach_pitch_run_matchup(
+        games, full_long, ref["rol_b"], ref["rol_p"],
+        suffix="_30d", min_pa=BATTER_MIN_PA_ROLLING,
+    )
 
     # --- Bullpen composites ---
     # Make sure the pool computation includes any (team, date) pairs in

@@ -98,11 +98,12 @@ def step_outcomes(year: int, lookback_days: int = 3) -> str:
     writes one JSON per game date, overwriting whatever was there before.
     Lookback handles late-night final games and rescheduled games.
     """
-    from src.ingest.fetch_outcomes import run_backfill, DEFAULT_LOCAL_ROOT
+    from src.ingest.fetch_outcomes import run_backfill
+    import src.ingest.fetch_outcomes as fo
 
     end = date.today()
     start = end - timedelta(days=lookback_days)
-    summary = run_backfill(start, end, local_root=DEFAULT_LOCAL_ROOT)
+    summary = run_backfill(start, end, local_root=fo.DEFAULT_LOCAL_ROOT)
     return (f"days_processed={summary['days_processed']} "
             f"days_written={summary['days_written']} "
             f"total_games={summary['total_games']}")
@@ -142,11 +143,16 @@ def step_schedule(year: int, lookahead_days: int = 1) -> str:
     Idempotent — each date overwrites its own JSON snapshot. Lookahead
     lets us preview tomorrow's slate too in case we're running late.
     """
+    import src.ingest.fetch_schedule as fs
     from src.ingest.fetch_schedule import run_backfill
 
     today = date.today()
     end = today + timedelta(days=lookahead_days)
-    summary = run_backfill(today, end)
+    summary = run_backfill(
+        today, end,
+        local_root=fs.DEFAULT_LOCAL_ROOT,
+        statcast_root=fs.DEFAULT_STATCAST_ROOT,
+    )
     return (f"days_written={summary['days_written']} "
             f"total_games={summary['total_games']}")
 
@@ -230,9 +236,10 @@ def step_predict(
         except OSError as e:
             logger.warning("[predict] could not save model cache: %s", e)
 
-    team_name_map = build_team_name_to_id(
-        REPO_ROOT / "data/features/training_2025.parquet"
-    )
+    team_feat = REPO_ROOT / f"data/features/training_{year}.parquet"
+    if not team_feat.exists():
+        team_feat = REPO_ROOT / "data/features/training_2025.parquet"
+    team_name_map = build_team_name_to_id(team_feat)
 
     def _odds_for(target: date):
         lo = (target - timedelta(days=1)).isoformat()
@@ -438,10 +445,15 @@ def step_track() -> str:
     from src.tracking.bet_log import reconcile_clv, reconcile_outcomes
     from src.tracking.dashboard import render
 
-    clv = reconcile_clv()
+    try:
+        clv = reconcile_clv()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[track] CLV reconciliation skipped: %s", e)
+        clv = {"computed": 0, "skipped": 0}
     outc = reconcile_outcomes(
         outcomes_root=REPO_ROOT / "data/outcomes",
         features_root=REPO_ROOT / "data/features",
+        raw_outcomes_root=REPO_ROOT / "data/raw/outcomes/baseball_mlb",
     )
     out_path = render()
     return (f"bet log: clv +{clv['computed']} ({clv['skipped']} pending), "

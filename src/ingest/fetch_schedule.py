@@ -196,11 +196,15 @@ def write_local_schedule(record: dict[str, Any], *,
 
 
 def run_schedule_ingest(target_date: date, *,
-                        local_root: Path = DEFAULT_LOCAL_ROOT,
+                        local_root: Path | str | None = None,
                         years_for_hand: tuple[int, ...] | None = None,
-                        statcast_root: Path = DEFAULT_STATCAST_ROOT,
+                        statcast_root: Path | str | None = None,
                         skip_empty: bool = True) -> dict[str, Any]:
     """Pull, hand-attach, and persist one date's schedule."""
+    if local_root is None:
+        local_root = DEFAULT_LOCAL_ROOT
+    if statcast_root is None:
+        statcast_root = DEFAULT_STATCAST_ROOT
     games = fetch_schedule_for_date(target_date)
     years = years_for_hand or (target_date.year,)
     hand_map = pitcher_hand_lookup(years=years, statcast_root=statcast_root)
@@ -243,12 +247,14 @@ def run_backfill(start_date: date, end_date: date, **kwargs) -> dict[str, Any]:
 
 def load_schedule_for_date(target_date: date | str,
                            *,
-                           local_root: Path | str = DEFAULT_LOCAL_ROOT,
+                           local_root: Path | str | None = None,
                            sport: str = SPORT_LABEL) -> pd.DataFrame:
     """Read the persisted JSON for ``target_date`` and return a tidy DataFrame.
 
     Empty DataFrame if the snapshot file doesn't exist yet.
     """
+    if local_root is None:
+        local_root = DEFAULT_LOCAL_ROOT
     if isinstance(target_date, str):
         target_date = date.fromisoformat(target_date)
     rel = schedule_relative_key(target_date, sport=sport)

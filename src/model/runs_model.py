@@ -66,6 +66,7 @@ from sklearn.preprocessing import StandardScaler
 
 DEFAULT_OFF_FEATURES: tuple[str, ...] = (
     "off_xwOBA_matchup_adj",
+    "off_pitch_rv_matchup",
     "off_Barrel_pct",
     "off_HR_pct",
     "off_BB_pct",
@@ -73,6 +74,7 @@ DEFAULT_OFF_FEATURES: tuple[str, ...] = (
 DEFAULT_OPP_SP_FEATURES: tuple[str, ...] = (
     "opp_sp_SIERA",
     "opp_sp_xwOBA_matchup_adj",
+    "opp_sp_pitch_rv_matchup",
     "opp_sp_Barrel_pct",
 )
 DEFAULT_CONTEXT_FEATURES: tuple[str, ...] = ("is_home",)
@@ -105,7 +107,9 @@ ROLLING_FEATURE_COLS: tuple[str, ...] = (
 COMBINED_FEATURE_COLS: tuple[str, ...] = (
     *DEFAULT_FEATURE_COLS,
     "off_xwOBA_30d_matchup_adj",
+    "off_pitch_rv_matchup_30d",
     "opp_sp_xwOBA_30d_matchup_adj",
+    "opp_sp_pitch_rv_matchup_30d",
 )
 
 # Bullpen features (the opp_bp_* fields are LINEUP-RESOLVED: per-slot

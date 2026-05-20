@@ -32,6 +32,13 @@ bash infra/sync_artifacts_to_s3.sh
 
 This copies training parquets, model pickle, lineups, statcast, OAA, park factors, and optional bet log to `s3://$BUCKET/pipeline/data/`.
 
+**Model pickle:** train with the same library versions as the inference container. A local venv on pandas 3 / sklearn 1.8 produces pickles that **fail to load** in Lambda (pandas 2.2 / sklearn 1.5). After rebuilding features:
+
+```bash
+bash infra/train_model_lambda_compat.sh
+bash infra/sync_artifacts_to_s3.sh
+```
+
 ## 2. Build & push inference container (ECR)
 
 **Prerequisite — Docker must be running on your Mac.** The inference Lambda uses a **container image**; you build it locally (or on any machine with Docker) and push to ECR.

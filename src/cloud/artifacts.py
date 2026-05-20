@@ -218,6 +218,7 @@ def install_workspace(root: Path | None = None) -> Path:
     import src.pipeline.daily_refresh as dr
     import src.ingest.fetch_outcomes as fo
     import src.ingest.fetch_schedule as fs
+    import src.features.outcomes_loader as ol
     import src.tracking.bet_log as bl
     import src.tracking.dashboard as dash
 
@@ -231,6 +232,9 @@ def install_workspace(root: Path | None = None) -> Path:
     fs.REPO_ROOT = root
     fs.DEFAULT_LOCAL_ROOT = root / "data/raw/schedule"
     fs.DEFAULT_STATCAST_ROOT = root / "data/raw/statcast"
+
+    ol.DEFAULT_RAW_ROOT = root / "data/raw/outcomes/baseball_mlb"
+    ol.DEFAULT_ROLLUP_ROOT = root / "data/outcomes"
 
     bl.DEFAULT_LOG_PATH = root / "data/tracking/bet_log.parquet"
     dash.DEFAULT_OUT = root / "data/tracking/bet_dashboard.html"

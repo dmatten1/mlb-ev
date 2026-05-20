@@ -109,6 +109,7 @@ def _pitcher_lookup_from_schedule_snapshots(
         return lookup
 
     from src.ingest.fetch_schedule import load_schedule_for_date
+    import src.ingest.fetch_schedule as fs
 
     seen_dates: set = set()
     for gd in pend["game_date"]:
@@ -118,7 +119,7 @@ def _pitcher_lookup_from_schedule_snapshots(
             continue
 
     for d in sorted(seen_dates):
-        sdf = load_schedule_for_date(d)
+        sdf = load_schedule_for_date(d, local_root=fs.DEFAULT_LOCAL_ROOT)
         if sdf.empty:
             continue
         if ("away_probable_pitcher_name" not in sdf.columns

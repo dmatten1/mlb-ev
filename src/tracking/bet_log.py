@@ -340,12 +340,16 @@ def reconcile_clv(
         date_hi = str(needs["commence_time"].max().date() + pd.Timedelta(days=1))
 
     odds_long = load_snapshots_long(date_lo=date_lo, date_hi=date_hi)
+    if odds_long.empty:
+        return {"computed": 0, "skipped": int(log["clv_pp"].isna().sum())}
     # For CLV we want the LATEST snapshot before commence_time across
     # any of the bettor's books — close_window_minutes=0 lifts the
     # pre-game cutoff so we grab the literal closing line.
     closing = best_lines_per_game(
         odds_long, close_window_minutes=0, price_strategy="best",
     )
+    if closing.empty or "commence_time" not in closing.columns:
+        return {"computed": 0, "skipped": int(log["clv_pp"].isna().sum())}
     # Match by (commence_time, home_team, away_team).
     closing["commence_time"] = pd.to_datetime(closing["commence_time"], utc=True)
     log_idx = log.set_index("game_id")
@@ -389,33 +393,47 @@ def reconcile_outcomes(
     *,
     outcomes_root: Path | str = Path("data/outcomes"),
     features_root: Path | str = Path("data/features"),
+    raw_outcomes_root: Path | str | None = Path("data/raw/outcomes/baseball_mlb"),
 ) -> dict:
     """Fill ``home_score`` / ``away_score`` / ``outcome`` / ``profit_units``
     columns for every bet whose game has finalized.
 
-    Looks up final scores in two places, in order: the dedicated
-    ``data/outcomes/outcomes_<year>.parquet`` if present (canonical),
-    else the ``home_score`` / ``away_score`` columns on
-    ``data/features/training_<year>.parquet`` (which the daily feature
-    build already populates as games complete).
+    Looks up final scores in three places, in order:
+
+    1. ``data/outcomes/outcomes_<year>.parquet`` (rollup parquet)
+    2. Raw JSON under ``data/raw/outcomes/baseball_mlb/<year>/`` (updated
+       every ``live_refresh`` — fresher than training parquets)
+    3. ``data/features/training_<year>.parquet`` (rebuilt only on full refresh)
     """
+    from src.features.outcomes_loader import load_outcomes
+
     log = load_log(log_path)
     if log.empty:
         return {"resolved": 0, "pending": 0}
 
     outcomes_root = Path(outcomes_root)
     features_root = Path(features_root)
+    raw_outcomes_root = Path(raw_outcomes_root) if raw_outcomes_root else None
     years_needed = pd.to_datetime(log["commence_time"], utc=True).dt.year.unique()
     outs = []
     for y in years_needed:
         y = int(y)
-        cands = (outcomes_root / f"outcomes_{y}.parquet",
-                  features_root / f"training_{y}.parquet")
-        for p in cands:
-            if p.exists():
-                df = pd.read_parquet(p, columns=["game_id", "home_score", "away_score"])
-                outs.append(df)
-                break
+        year_frames: list[pd.DataFrame] = []
+        training = features_root / f"training_{y}.parquet"
+        if training.exists():
+            year_frames.append(
+                pd.read_parquet(training, columns=["game_id", "home_score", "away_score"])
+            )
+        rollup = outcomes_root / f"outcomes_{y}.parquet"
+        if rollup.exists():
+            year_frames.append(
+                pd.read_parquet(rollup, columns=["game_id", "home_score", "away_score"])
+            )
+        if raw_outcomes_root is not None:
+            df = load_outcomes(year=y, root=raw_outcomes_root)
+            if not df.empty:
+                year_frames.append(df[["game_id", "home_score", "away_score"]])
+        outs.extend(year_frames)
     if not outs:
         return {"resolved": 0, "pending": int(log["outcome"].eq("pending").sum())}
     outcomes = pd.concat(outs, ignore_index=True)

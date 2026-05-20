@@ -252,6 +252,39 @@ def blend_contact_profile(
     return gb, fb, ld
 
 
+def expected_pitch_run_value_matchup(
+    hitter_run_values: dict[str, float],
+    pitcher_run_values: dict[str, float],
+    pitcher_pitch_mix: dict[str, float],
+    *,
+    min_mix_share: float = 0.005,
+) -> float:
+    """Blend pitcher and hitter pitch-type RV, weighted by pitcher mix.
+
+    For each pitch type present in ``pitcher_pitch_mix`` with enough
+    share, the per-type contribution is ``0.5 * (pitcher_rv + hitter_rv)``
+    (runs per 100 pitches). Missing side for a type uses 0.0 (league
+    average). Returns NaN when no mix or no overlapping estimates.
+    """
+    if not pitcher_pitch_mix:
+        return float("nan")
+    num = 0.0
+    den = 0.0
+    for pt, w in pitcher_pitch_mix.items():
+        if w < min_mix_share:
+            continue
+        p = pitcher_run_values.get(pt)
+        h = hitter_run_values.get(pt)
+        if p is None and h is None:
+            continue
+        p = 0.0 if p is None else float(p)
+        h = 0.0 if h is None else float(h)
+        blended = 0.5 * (p + h)
+        num += w * blended
+        den += w
+    return num / den if den > 0 else float("nan")
+
+
 def air_share_from_contact(
     gb: float, fb: float, ld: float,
 ) -> tuple[float, float]:

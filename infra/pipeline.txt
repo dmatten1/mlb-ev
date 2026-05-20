@@ -40,11 +40,33 @@
                   │       YYYY-MM-DDTHH-MM-SSZ.json │
                   └─────────────────────────────────┘
                                     │
-                                    │ (future)
+                                    ▲
+                                    │ PUTs (raw/outcomes/...)
+                                    │
+                  ┌─────────────────────────────────┐
+                  │   Lambda: mlb-ev-ingest-outcomes│   Python 3.12, arm64, 256MB.
+                  │   handler: src.ingest.          │   1 invoke/day at 01:30 ET.
+                  │            outcomes_lambda_     │   Bundled deps: MLB-StatsAPI.
+                  │            handler              │
+                  │   env: OUTCOMES_S3_BUCKET, ...  │
+                  └─────────────────────────────────┘
+                                    ▲
+                                    │ HTTPS GET (statsapi.mlb.com)
+                                    │   no key, no rate limit
+                                    │
+                  ┌─────────────────────────────────┐
+                  │   EventBridge: outcomes-0130-et │
+                  │   group: mlb-ev                 │
+                  └─────────────────────────────────┘
+
+                                    │
+                                    │ (next session)
                                     ▼
                   ┌─────────────────────────────────┐
-                  │   src/features/ (NOT BUILT YET) │   Read S3, join with MLB-StatsAPI
-                  │   src/train/    (NOT BUILT YET) │   + pybaseball sabermetrics,
-                  │   src/backtest/ (NOT BUILT YET) │   write Parquet to data/processed/.
-                  │   src/serve/    (NOT BUILT YET) │
+                  │   src/features/ (PARTIAL)       │   sabermetrics, statcast_aggregation,
+                  │     outcomes_loader (built)     │     outcomes_loader, matchup primitives.
+                  │     matchup primitives (built)  │
+                  │   src/train/    (NOT BUILT YET) │   Build per-game feature vectors,
+                  │   src/backtest/ (NOT BUILT YET) │   train baseline-runs combiner,
+                  │   src/serve/    (NOT BUILT YET) │   backtest, emit EV recommendations.
                   └─────────────────────────────────┘

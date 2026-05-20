@@ -17,3 +17,4 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+.infra/cloud_deploy.md

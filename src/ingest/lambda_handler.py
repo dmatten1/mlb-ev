@@ -8,10 +8,12 @@ Configure via environment variables on the Lambda function:
   ODDS_API_REGIONS   (optional) Defaults to ``us``.
   ODDS_API_MARKETS   (optional) Defaults to ``h2h``.
   ODDS_API_ODDS_FORMAT (optional) Defaults to ``american``.
+  INFERENCE_LAMBDA_NAME (optional) If set, async-invokes the container
+    inference Lambda after a successful snapshot (see ``infra/cloud_deploy.md``).
 
 The function is intended to be triggered by EventBridge Scheduler on a cron in
-America/New_York. It returns a small summary dict that is captured in
-CloudWatch Logs and visible in the EventBridge invocation history.
+America/Chicago (or Eastern — see your rule). It returns a small summary dict
+that is captured in CloudWatch Logs and visible in the EventBridge invocation history.
 """
 
 from __future__ import annotations
@@ -54,4 +56,18 @@ def handler(event: dict[str, Any] | None, context: Any) -> dict[str, Any]:
         summary["requests_remaining"],
         summary["destinations"],
     )
+
+    try:
+        from src.cloud.artifacts import invoke_inference_lambda
+
+        invoke_inference_lambda(
+            payload={
+                "source": "odds",
+                "game_count": summary["game_count"],
+                "destinations": summary.get("destinations"),
+            },
+        )
+    except Exception:  # noqa: BLE001 — odds snapshot succeeded; log chain failure
+        logger.exception("failed to invoke inference Lambda (set INFERENCE_LAMBDA_NAME?)")
+
     return summary

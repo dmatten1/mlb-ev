@@ -1,0 +1,8 @@
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+TZ=America/Chicago
+
+# Lightweight pipeline: settle scores, refresh tonight's predictions + bet log,
+# rebuild dashboard. Every 2 hours on the :25 (stagger from whole-hour odds dumps).
+# Tune frequency by editing this file and rebuilding the live image.
+25 */2 * * * root cd /app && python -m src.pipeline.live_refresh >> /proc/1/fd/1 2>&1

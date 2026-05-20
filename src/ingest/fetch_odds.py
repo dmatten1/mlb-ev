@@ -8,6 +8,14 @@ Destinations:
 Run locally:
     python -m src.ingest.fetch_odds
 
+After a successful snapshot, optionally run ``src.pipeline.live_refresh``
+(predict + bet log + dashboard)::
+
+    MLB_EV_LIVE_AFTER_ODDS=1 python -m src.ingest.fetch_odds
+    python -m src.ingest.fetch_odds --live-after
+
+On minimal images (scheduler container) live refresh is skipped if imports fail.
+
 Run in Docker:
     docker compose run --rm ingest
 
@@ -235,8 +243,41 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--s3-prefix",
         default=os.getenv("ODDS_S3_PREFIX", DEFAULT_S3_PREFIX),
     )
+    parser.add_argument(
+        "--live-after",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="After success, run live_refresh (predict + tracker + dashboard). "
+        "Default: only if MLB_EV_LIVE_AFTER_ODDS is 1/true/yes/on.",
+    )
     parser.add_argument("--log-level", default=os.getenv("LOG_LEVEL", "INFO"))
     return parser.parse_args(argv)
+
+
+def _should_run_live_after(args: argparse.Namespace) -> bool:
+    """``--live-after`` / ``--no-live-after`` override env ``MLB_EV_LIVE_AFTER_ODDS``."""
+    flag = getattr(args, "live_after", None)
+    if flag is True:
+        return True
+    if flag is False:
+        return False
+    v = os.getenv("MLB_EV_LIVE_AFTER_ODDS", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _run_live_refresh_after_odds() -> int:
+    """Return exit code from ``src.pipeline.live_refresh`` or ``0`` if skipped."""
+    try:
+        from src.pipeline import live_refresh
+    except ImportError as e:
+        logger.warning("Skipping live_refresh after odds (missing deps): %s", e)
+        return 0
+    logger.info("Starting live_refresh after odds snapshot")
+    try:
+        return live_refresh.main([])
+    except Exception:  # noqa: BLE001 — log full traceback; caller sets exit code
+        logger.exception("live_refresh failed after odds snapshot")
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -292,6 +333,8 @@ def main(argv: list[str] | None = None) -> int:
         summary["last_request_cost"],
         summary["destinations"],
     )
+    if _should_run_live_after(args):
+        return _run_live_refresh_after_odds()
     return 0
 
 

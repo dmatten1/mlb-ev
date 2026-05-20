@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd job for the daily MLB EV refresh.
+  Installed by `make schedule-on`. The Makefile substitutes:
+    __REPO_ROOT__ -> /path/to/this/checkout
+    __PYTHON__    -> /path/to/this/checkout/.venv/bin/python
+
+  Runs every day at 07:00 America/New_York. If the Mac is asleep at 07:00,
+  launchd executes the job as soon as it wakes (much better than cron for
+  laptops). To change time edit StartCalendarInterval below and re-run
+  `make schedule-on`.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dmatten.mlb-ev.refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-m</string>
+        <string>src.pipeline.daily_refresh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_ROOT__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>TZ</key>
+        <string>America/New_York</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/data/predictions/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/data/predictions/launchd.err.log</string>
+</dict>
+</plist>

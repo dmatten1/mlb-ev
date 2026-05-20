@@ -1,0 +1,3 @@
+# Outcomes Lambda deps. boto3 / botocore ship in the Lambda runtime; we only
+# need MLB-StatsAPI here. It pulls in `requests` transitively.
+MLB-StatsAPI>=1.7

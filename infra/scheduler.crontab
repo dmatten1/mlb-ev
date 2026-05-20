@@ -1,11 +1,15 @@
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
-TZ=America/New_York
+# Central Time: same wall-clock *baseball* windows as 9:00 / 12:30 / 18:00 / 21:00 US Eastern (CT = ET − 1h).
+# DST changes are handled automatically for both zones.
+TZ=America/Chicago
 
 # m  h  dom mon dow user  command
-# Runs the odds snapshot at 9:00 AM, 12:30 PM, 6:00 PM, and 9:00 PM US Eastern.
-# America/New_York handles EST/EDT (daylight savings) automatically.
-  0   9   *   *   *   root cd /app && python -m src.ingest.fetch_odds > /proc/1/fd/1 2> /proc/1/fd/2
- 30  12   *   *   *   root cd /app && python -m src.ingest.fetch_odds > /proc/1/fd/1 2> /proc/1/fd/2
-  0  18   *   *   *   root cd /app && python -m src.ingest.fetch_odds > /proc/1/fd/1 2> /proc/1/fd/2
-  0  21   *   *   *   root cd /app && python -m src.ingest.fetch_odds > /proc/1/fd/1 2> /proc/1/fd/2
+# Odds snapshot then paper-trading pipeline (predict + bet log + CLV/outcomes +
+# dashboard). Same cadence as macOS launchd odds job.
+# Requires ./data mounted with features + model cache; .env with ODDS_API_KEY (+ AWS if S3).
+# For Eastern-local cron instead: set TZ=America/New_York and use hours 9,12,18,21 (minute 30 on the noon slot).
+  0   8   *   *   *   root cd /app && python -m src.ingest.fetch_odds --live-after > /proc/1/fd/1 2> /proc/1/fd/2
+ 30  11   *   *   *   root cd /app && python -m src.ingest.fetch_odds --live-after > /proc/1/fd/1 2> /proc/1/fd/2
+  0  17   *   *   *   root cd /app && python -m src.ingest.fetch_odds --live-after > /proc/1/fd/1 2> /proc/1/fd/2
+  0  20   *   *   *   root cd /app && python -m src.ingest.fetch_odds --live-after > /proc/1/fd/1 2> /proc/1/fd/2

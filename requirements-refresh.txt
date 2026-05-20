@@ -1,0 +1,16 @@
+# Dependencies for the daily refresh pipeline.
+# These are NOT bundled into the AWS odds Lambda (which only needs the
+# 3-line requirements.txt). Keeping them separate makes the Lambda zip
+# small and lets us iterate on the heavy data-science stack independently.
+
+-r requirements.txt
+
+pandas==2.2.3
+numpy==2.1.3
+scikit-learn==1.5.2
+pyarrow==18.0.0
+scipy==1.14.1
+
+# Stats sources
+pybaseball==2.2.7
+MLB-StatsAPI==1.7.2

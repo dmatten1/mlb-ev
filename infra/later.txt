@@ -9,3 +9,29 @@ aws lambda get-function --function-name "$FUNCTION_NAME" --query Configuration.L
 
 # Pull a snapshot down to inspect
 aws s3 cp "s3://$BUCKET/raw/odds/baseball_mlb/h2h/$(date -u +%F)/<timestamp>.json" -
+
+
+# See most recent
+LATEST=$(aws s3api list-objects-v2 \
+  --bucket "$BUCKET" \
+  --prefix "raw/odds/baseball_mlb/h2h/$(date -u +%F)/" \
+  --query 'reverse(sort_by(Contents,&LastModified))[0].Key' --output text)
+aws s3 cp "s3://$BUCKET/$LATEST" - | jq | less
+
+
+# How many games in the snapshot?
+aws s3 cp "s3://$BUCKET/$LATEST" - | jq '.game_count'
+
+# Just the first game in full
+aws s3 cp "s3://$BUCKET/$LATEST" - | jq '.data[0]'
+
+# Teams + commence times across all games
+aws s3 cp "s3://$BUCKET/$LATEST" - | jq -r '.data[] | "\(.commence_time)  \(.away_team) @ \(.home_team)"'
+
+# Best moneyline price for each game (max odds across books per side)
+aws s3 cp "s3://$BUCKET/$LATEST" - | jq -r '
+  .data[] | {
+    matchup: "\(.away_team) @ \(.home_team)",
+    away_best: ([.bookmakers[].markets[] | select(.key=="h2h") | .outcomes[] | select(.name == ..|.away_team? // empty) | .price] | max),
+    home_best: ([.bookmakers[].markets[] | select(.key=="h2h") | .outcomes[] | select(.name == ..|.home_team? // empty) | .price] | max)
+  } | "\(.matchup): best away \(.away_best), best home \(.home_best)"'

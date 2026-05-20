@@ -31,10 +31,11 @@ python3 -m pip install \
   -r "${REPO_ROOT}/requirements-lambda.txt"
 
 echo "==> Copying source"
-mkdir -p "${STAGE_DIR}/src/ingest"
-touch "${STAGE_DIR}/src/__init__.py" "${STAGE_DIR}/src/ingest/__init__.py"
+mkdir -p "${STAGE_DIR}/src/ingest" "${STAGE_DIR}/src/cloud"
+touch "${STAGE_DIR}/src/__init__.py" "${STAGE_DIR}/src/ingest/__init__.py" "${STAGE_DIR}/src/cloud/__init__.py"
 cp "${REPO_ROOT}/src/ingest/fetch_odds.py" "${STAGE_DIR}/src/ingest/"
 cp "${REPO_ROOT}/src/ingest/lambda_handler.py" "${STAGE_DIR}/src/ingest/"
+cp "${REPO_ROOT}/src/cloud/"*.py "${STAGE_DIR}/src/cloud/"
 
 echo "==> Zipping into ${ZIP_PATH}"
 ( cd "${STAGE_DIR}" && zip -qr "${ZIP_PATH}" . )

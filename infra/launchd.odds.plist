@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Odds snapshot + live_refresh (predict, bet log, dashboard).
+
+  Same *instant* as Docker infra/scheduler.crontab: when Mac system clock is
+  America/Chicago, use hours 8 / 11:30 / 17 / 20 local (= 9 / 12:30 / 18 / 21 ET).
+  If your Mac is set to New York time, use 9 / 12:30 / 18 / 21 instead.
+
+  Installed with: make odds-schedule-on
+
+  StartCalendarInterval uses the Mac's *system* time zone.
+
+  If the machine is asleep at a fire time, launchd runs when it wakes.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dmatten.mlb-ev.odds</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-m</string>
+        <string>src.ingest.fetch_odds</string>
+        <string>--live-after</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_ROOT__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>TZ</key>
+        <string>America/Chicago</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>8</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>11</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>17</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/data/predictions/launchd.odds.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/data/predictions/launchd.odds.err.log</string>
+</dict>
+</plist>

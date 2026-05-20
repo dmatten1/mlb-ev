@@ -18,7 +18,9 @@ RUN pip install --no-cache-dir -r requirements-refresh.txt
 
 COPY src ./src
 
-COPY infra/scheduler.crontab /etc/cron.d/odds-ingest
-RUN chmod 0644 /etc/cron.d/odds-ingest
+COPY infra/live_loop.crontab /etc/cron.d/mlb-ev-live
+RUN chmod 0644 /etc/cron.d/mlb-ev-live
 
+# Long-running: cron fires `live_refresh` on the schedule above. For a one-shot:
+#   docker compose run --rm live python -m src.pipeline.live_refresh
 CMD ["cron", "-f", "-L", "15"]

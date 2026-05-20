@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Frequent light dashboard refresh (outcomes + schedule +
+  predict + bet log + reconcile + HTML).
+
+  Installed via `make live-schedule-on`. Runs every StartInterval seconds
+  (default 7200 = 2 hours) while the Mac is awake. Complements the once-daily
+  full `make schedule-on` job.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dmatten.mlb-ev.live</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-m</string>
+        <string>src.pipeline.live_refresh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_ROOT__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>TZ</key>
+        <string>America/New_York</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>7200</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/data/predictions/launchd.live.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/data/predictions/launchd.live.err.log</string>
+</dict>
+</plist>

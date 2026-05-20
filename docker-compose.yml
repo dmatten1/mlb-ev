@@ -13,9 +13,10 @@ services:
       - ./data:/app/data
     command: ["python", "-m", "src.ingest.fetch_odds"]
 
-  # Long-running service: cron inside the container fires the same ingest
-  # script at 9:00, 12:30, 18:00, 21:00 America/New_York every day.
-  # Start with: `docker compose up -d scheduler`
+  # Long-running service: cron fires odds snapshot + live_refresh (--live-after)
+  # four times daily — see infra/scheduler.crontab (default: America/Chicago,
+  # 8:00 / 11:30 / 17:00 / 20:00 CT = 9 / 12:30 / 18 / 21 ET).
+  # Start with: `docker compose up -d --build scheduler` or `make docker-scheduler-up`
   scheduler:
     build:
       context: .
@@ -26,3 +27,36 @@ services:
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env:ro
+
+  # Long-running cron: light pipeline every ~2h (outcomes, schedule, predict,
+  # bet log, dashboard). Mount AWS keys via .env for S3 odds if needed.
+  # One-shot: docker compose run --rm live python -m src.pipeline.live_refresh
+  live:
+    build:
+      context: .
+      dockerfile: infra/live_cron.Dockerfile
+    image: mlb-ev/live:latest
+    container_name: mlb-ev-live
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+
+  # One-shot job: runs the full daily refresh pipeline (outcomes,
+  # boxscores, statcast, OAA, lineups, features, predict) and writes
+  # ``data/predictions/<date>.{parquet,md}``.
+  #   docker compose run --rm refresh                  # full pipeline
+  #   docker compose run --rm refresh --no-predict     # data-only
+  # Schedule by invoking from launchd / cron / EventBridge — the image
+  # is stateless beyond the host-mounted ``data/`` volume.
+  refresh:
+    build:
+      context: .
+      dockerfile: infra/refresh.Dockerfile
+    image: mlb-ev/refresh:latest
+    container_name: mlb-ev-refresh
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data

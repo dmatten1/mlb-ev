@@ -275,6 +275,9 @@ def step_predict(
                 spl = res.get("skipped_paper_locked", 0)
                 if spl:
                     detail_parts.append(f"{spl} skipped (paper lock)")
+                skp = res.get("skipped_projected_lineups", 0)
+                if skp:
+                    detail_parts.append(f"{skp} awaiting lineups")
                 if detail_parts:
                     bet_log_msg = "; bet_log: " + ", ".join(detail_parts)
             except Exception as e:  # noqa: BLE001
@@ -298,7 +301,7 @@ def step_predict(
             slate = predict_slate(proj, rm, odds)
             if not slate.empty:
                 return _write(slate, today.isoformat(),
-                              slate_label="tonight (projected lineups)")
+                              slate_label="tonight")
 
     # 2. Fall back to most recent historical slate.
     feat_path = REPO_ROOT / f"data/features/training_{year}.parquet"
@@ -339,19 +342,33 @@ def _fmt_american(x: float) -> str:
 def _write_markdown_summary(slate, md_path: Path, *, run_date: str,
                              slate_label: str = "") -> None:
     import pandas as pd  # local import to keep module-level imports light
+    from src.tracking.bet_log import both_lineups_actual, filter_paper_trade_eligible
 
     n_games = len(slate)
     rec = slate[slate.recommended.isin(["home", "away"])].copy()
-    n_bets = len(rec)
-    total_stake_pct = rec.recommended_kelly.sum() * 100
+    paper = filter_paper_trade_eligible(slate)
+    if not rec.empty and "home_lineup_source" in rec.columns:
+        waiting = rec[~rec.apply(both_lineups_actual, axis=1)]
+    else:
+        waiting = rec.iloc[0:0].copy()
+    n_signals = len(rec)
+    n_paper = len(paper)
+    total_stake_pct = paper.recommended_kelly.sum() * 100 if n_paper else 0.0
 
     lines: list[str] = []
     title_suffix = f" ({slate_label})" if slate_label else ""
     lines.append(f"# MLB EV Predictions — {run_date}{title_suffix}\n")
     lines.append(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n")
     lines.append(f"- Games on slate: **{n_games}**")
-    lines.append(f"- Recommended bets: **{n_bets}**")
-    lines.append(f"- Total Kelly (bankroll): **{total_stake_pct:.2f}%** — optional % of bankroll per play.\n")
+    lines.append(f"- Model signals (+EV): **{n_signals}**")
+    lines.append(f"- Paper bets (actual lineups posted): **{n_paper}**")
+    lines.append(f"- Total Kelly (paper, bankroll): **{total_stake_pct:.2f}%**\n")
+    lines.append(
+        "> **Paper trading** logs a bet only after **both** teams post their lineup "
+        "card to MLB (~3 hours before first pitch). Projected-lineup signals appear "
+        "below as *awaiting lineups* but are **not** written to the bet tracker until "
+        "lineups drop on a later refresh.\n"
+    )
     lines.append(
         "> **Tracker / units:** **risk_units** use the same pre–daily-cap Kelly as the model. "
         "Each slate defines **one unit** as the **mean** recommended Kelly that day (stored in the log as "
@@ -360,17 +377,18 @@ def _write_markdown_summary(slate, md_path: Path, *, run_date: str,
         "**Kelly (bankroll %)** in the table is *after* the slate’s daily cap — that’s for real-dollar sizing.\n"
     )
 
-    if n_bets:
-        has_book = ("home_book" in rec.columns and "away_book" in rec.columns)
-        lines.append("## Recommended bets\n")
+    def _append_rec_table(section_rec: pd.DataFrame, heading: str) -> None:
+        if section_rec.empty:
+            return
+        has_book = ("home_book" in section_rec.columns and "away_book" in section_rec.columns)
+        lines.append(heading + "\n")
         if has_book:
             lines.append("| Game | Side | Book | Odds | Model p | Fair p | Edge | EV | Kelly (bankroll %) |")
             lines.append("|---|---|---|---|---|---|---|---|---|")
         else:
             lines.append("| Game | Side | Odds | Model p | Fair p | Edge | EV | Kelly (bankroll %) |")
             lines.append("|---|---|---|---|---|---|---|---|")
-        rec_sorted = rec.sort_values("recommended_ev", ascending=False)
-        for _, r in rec_sorted.iterrows():
+        for _, r in section_rec.sort_values("recommended_ev", ascending=False).iterrows():
             matchup = f"{r.away_name} @ {r.home_name}"
             side_team = r.home_name if r.recommended == "home" else r.away_name
             side_label = "HOME" if r.recommended == "home" else "AWAY"
@@ -397,6 +415,9 @@ def _write_markdown_summary(slate, md_path: Path, *, run_date: str,
                 )
         lines.append("")
 
+    _append_rec_table(paper, "## Paper bets (actual lineups posted)")
+    _append_rec_table(waiting, "## Awaiting lineups (not logged yet)")
+
     has_source = ("home_lineup_source" in slate.columns
                   and "away_lineup_source" in slate.columns)
     lines.append("## Full slate (model probabilities)\n")
@@ -408,7 +429,15 @@ def _write_markdown_summary(slate, md_path: Path, *, run_date: str,
     lines.append("|" + "---|" * len(header_cols))
     for _, r in slate.sort_values("commence_time").iterrows():
         matchup = f"{r.away_name} @ {r.home_name}"
-        verdict = ("bet " + r.recommended.upper()) if r.recommended in ("home","away") else "no bet"
+        if r.recommended in ("home", "away"):
+            if has_source and both_lineups_actual(r):
+                verdict = "bet " + r.recommended.upper()
+            elif has_source:
+                verdict = "signal (await lineups)"
+            else:
+                verdict = "bet " + r.recommended.upper()
+        else:
+            verdict = "no bet"
         if has_source:
             # 'A' = actual lineup posted; 'P' = projected; mixed unusual.
             tag_a = "A" if r.away_lineup_source == "actual" else "P"
@@ -442,7 +471,7 @@ def step_track() -> str:
     Cheap to run every refresh — the log is small, CLV/outcome queries
     only touch unfinished rows, and the HTML render is ~ms.
     """
-    from src.tracking.bet_log import reconcile_clv, reconcile_outcomes
+    from src.tracking.bet_log import reconcile_clv, reconcile_outcomes, reconcile_voids
     from src.tracking.dashboard import render
 
     try:
@@ -450,6 +479,11 @@ def step_track() -> str:
     except Exception as e:  # noqa: BLE001
         logger.warning("[track] CLV reconciliation skipped: %s", e)
         clv = {"computed": 0, "skipped": 0}
+    voids = reconcile_voids(
+        outcomes_root=REPO_ROOT / "data/outcomes",
+        features_root=REPO_ROOT / "data/features",
+        raw_outcomes_root=REPO_ROOT / "data/raw/outcomes/baseball_mlb",
+    )
     outc = reconcile_outcomes(
         outcomes_root=REPO_ROOT / "data/outcomes",
         features_root=REPO_ROOT / "data/features",
@@ -457,6 +491,7 @@ def step_track() -> str:
     )
     out_path = render()
     return (f"bet log: clv +{clv['computed']} ({clv['skipped']} pending), "
+            f"voids +{voids['voided']} ({voids['pending']} pending), "
             f"outcomes +{outc['resolved']} ({outc['pending']} pending) — "
             f"wrote {out_path.name}")
 

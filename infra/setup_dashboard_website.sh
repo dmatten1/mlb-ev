@@ -65,13 +65,20 @@ aws s3api put-bucket-policy \
   --region "$REGION"
 
 LOCAL_HTML="${REPO_ROOT}/data/tracking/bet_dashboard.html"
-if [[ -f "$LOCAL_HTML" ]]; then
-  echo "==> Upload local dashboard -> s3://${BUCKET}/index.html"
+if aws s3api head-object --bucket "$BUCKET" --key index.html --region "$REGION" 2>/dev/null; then
+  if [[ "${UPLOAD_DASHBOARD:-}" == "1" && -f "$LOCAL_HTML" ]]; then
+    echo "==> Upload local dashboard -> s3://${BUCKET}/index.html (UPLOAD_DASHBOARD=1)"
+    aws s3 cp "$LOCAL_HTML" "s3://${BUCKET}/index.html" \
+      --content-type "text/html; charset=utf-8" \
+      --region "$REGION"
+  else
+    echo "==> index.html already in bucket (not overwriting; set UPLOAD_DASHBOARD=1 to force)"
+  fi
+elif [[ -f "$LOCAL_HTML" ]]; then
+  echo "==> Upload local dashboard -> s3://${BUCKET}/index.html (first deploy)"
   aws s3 cp "$LOCAL_HTML" "s3://${BUCKET}/index.html" \
     --content-type "text/html; charset=utf-8" \
     --region "$REGION"
-elif aws s3api head-object --bucket "$BUCKET" --key index.html --region "$REGION" 2>/dev/null; then
-  echo "==> index.html already in bucket"
 else
   echo "==> Placeholder index.html (inference Lambda will overwrite on next run)"
   cat > "${REPO_ROOT}/build/placeholder_index.html" <<'HTML'

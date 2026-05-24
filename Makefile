@@ -13,6 +13,7 @@ help:
 	@echo "  make project          — pull tonight's schedule + project lineups + predict"
 	@echo "  make predict          — alias for 'make project' (kept for muscle memory)"
 	@echo "  make odds             — pull one odds snapshot now (set MLB_EV_LIVE_AFTER_ODDS=1 in .env to chain live_refresh)"
+	@echo "  make slate            — pull today's predictions from S3 and write data/predictions/<date>.md (open in IDE)"
 	@echo "  make docker-refresh   — one-shot full pipeline in the refresh Docker image"
 	@echo ""
 	@echo "  make live-refresh     — light loop: outcomes + schedule + predict + tracker + dashboard (cached model)"
@@ -37,6 +38,9 @@ project predict:
 
 odds:
 	$(PYTHON) -m src.ingest.fetch_odds
+
+slate:
+	MLB_EV_S3_BUCKET=mlb-ev-dcm92 $(PYTHON) -m src.inference.view_slate --from-s3
 
 live-refresh:
 	$(PYTHON) -m src.pipeline.live_refresh --year $(YEAR)

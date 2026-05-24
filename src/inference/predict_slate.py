@@ -21,7 +21,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from src.model.betting import annotate_bets
+from src.model.betting import DEFAULT_MAX_EDGE, annotate_bets
 from src.model.evaluate import pythag_win_prob
 from src.model.runs_model import (
     DEFAULT_HFA_RUNS_BONUS, RunsModel, predict_runs,
@@ -82,6 +82,46 @@ def _odds_with_game_date(odds: pd.DataFrame) -> pd.DataFrame:
     return o
 
 
+def _game_match_time(games: pd.DataFrame) -> pd.Series:
+    """UTC first-pitch time used to pair each ``game_id`` with odds."""
+    if "game_datetime" in games.columns:
+        return pd.to_datetime(games["game_datetime"], utc=True)
+    if "commence_time" in games.columns:
+        return pd.to_datetime(games["commence_time"], utc=True)
+    raise ValueError("games frame needs game_datetime or commence_time for odds match")
+
+
+def _merge_games_with_odds(games: pd.DataFrame, odds: pd.DataFrame) -> pd.DataFrame:
+    """Attach odds rows to games, disambiguating doubleheaders by start time."""
+    g = _odds_join_keys(games)
+    g["match_time"] = _game_match_time(g)
+    o = _odds_with_game_date(odds)
+    o["match_time"] = pd.to_datetime(o["commence_time"], utc=True)
+
+    odds_cols = [
+        "match_time", "home_id", "away_id", "commence_time", "snapshot_ts", "n_books",
+        "home_price_american", "away_price_american", "home_book", "away_book",
+    ]
+    odds_cols = [c for c in odds_cols if c in o.columns]
+    odds_side = (
+        o[odds_cols]
+        .sort_values("match_time")
+        .drop_duplicates(["home_id", "away_id", "match_time"], keep="last")
+    )
+    games_side = g.sort_values("match_time")
+    merged = pd.merge_asof(
+        games_side,
+        odds_side,
+        on="match_time",
+        by=["home_id", "away_id"],
+        direction="nearest",
+        tolerance=pd.Timedelta(hours=3),
+    )
+    merged = merged.drop(columns=["match_time"], errors="ignore")
+    merged["commence_time"] = pd.to_datetime(merged["commence_time"], utc=True)
+    return merged.drop_duplicates("game_id", keep="first")
+
+
 def predict_slate(
     games: pd.DataFrame,
     runs_model: RunsModel,
@@ -90,7 +130,7 @@ def predict_slate(
     home_field_advantage_runs: float = DEFAULT_HFA_RUNS_BONUS,
     pythag_exponent: float = 1.83,
     ev_threshold: float = 0.0,
-    max_edge: float | None = 0.07,
+    max_edge: float | None = DEFAULT_MAX_EDGE,
     kelly_fraction_mult: float = 0.0625,
     kelly_cap: float | None = 0.01,
     daily_stake_cap: float | None = 0.05,
@@ -120,8 +160,8 @@ def predict_slate(
     max_edge
         Maximum |model_p − fair_p| on the recommended side. Bets where
         the model thinks it has a huge edge tend to be model errors, not
-        value (the market knows things our features don't). Default
-        0.07 (7pp). Set ``None`` to disable.
+        Optional ceiling on |model_p − fair_p|. Default ``None`` (no cap).
+        Set e.g. ``0.10`` to skip very large disagreements.
     kelly_fraction_mult
         Multiplier on full Kelly. Default 0.0625 (1/16 Kelly) — very
         conservative; MLB moneylines are high-variance enough that
@@ -168,23 +208,21 @@ def predict_slate(
                               "home_book", "away_book"]
     # Older odds frames (e.g. tests) may not carry the book columns.
     odds_keep = [c for c in odds_keep if c in o.columns]
-    # Doubleheaders share (date, home, away) — without a true game start
-    # time on the games side we can't disambiguate the second game from
-    # the first. For v1 we collapse duplicate odds entries to the LAST
-    # pre-game snapshot, accepting that the second game of a doubleheader
-    # will be matched against the wrong (game-1) odds row sometimes.
-    # When we add game_start_time to the features parquet we can swap in
-    # an exact merge_asof match.
-    odds_dedup = (
-        o[odds_keep]
-        .sort_values("commence_time")
-        .drop_duplicates(join_cols, keep="last")
-    )
-    games_dedup = g.drop_duplicates(["game_id"], keep="first")
-    merged = games_dedup.merge(
-        odds_dedup, on=join_cols, how="inner" if require_odds else "left"
-    )
-    merged = merged.drop_duplicates("game_id", keep="first")
+    if "game_datetime" in g.columns:
+        merged = _merge_games_with_odds(g, odds)
+    else:
+        # Legacy path: one game per (date, home, away). Doubleheaders keep
+        # the last odds row — acceptable only when the slate has no DH.
+        odds_dedup = (
+            o[odds_keep]
+            .sort_values("commence_time")
+            .drop_duplicates(join_cols, keep="last")
+        )
+        games_dedup = g.drop_duplicates(["game_id"], keep="first")
+        merged = games_dedup.merge(
+            odds_dedup, on=join_cols, how="inner" if require_odds else "left"
+        )
+        merged = merged.drop_duplicates("game_id", keep="first")
     if merged.empty:
         return merged
     has_price = merged["home_price_american"].notna() & merged["away_price_american"].notna()
@@ -223,8 +261,8 @@ def predict_slate(
         "kelly_home", "kelly_away",
         "recommended", "recommended_ev", "recommended_kelly",
         "recommended_kelly_pre_daily", "risk_ref_kelly", "risk_units",
-        # Lineup provenance (projected slate only — carried through when present).
         "home_lineup_source", "away_lineup_source",
+        "doubleheader", "game_num",
     ]
     out_cols = [c for c in out_cols if c in annotated.columns]
     return annotated[out_cols].reset_index(drop=True)

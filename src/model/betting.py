@@ -35,6 +35,10 @@ import pandas as pd
 # Defaults kept in sync with :func:`annotate_bets`.
 DEFAULT_KELLY_CAP: float | None = 0.01
 DEFAULT_KELLY_FRACTION_MULT: float = 0.0625
+# Max |model_p − fair_p| on the recommended side. ``None`` = no upper cap
+# (only +EV threshold applies). Was 7pp, then 10pp; removed after paper
+# trading showed 5pp+ edges outperforming and one +10.9pp spot blocked at 10pp.
+DEFAULT_MAX_EDGE: float | None = None
 # When ``risk_ref_kelly`` is unknown (legacy rows), use
 # ``cap * fraction_mult * TRACKING_KELLY_REF_FALLBACK_MULT`` (~0.00125 at defaults)
 # so typical pre-daily Kellys map near 1u instead of slamming the 0.5 floor.
@@ -272,7 +276,7 @@ def annotate_bets(
     home_price_col: str = "home_price_american",
     away_price_col: str = "away_price_american",
     ev_threshold: float = 0.0,
-    max_edge: float | None = 0.07,
+    max_edge: float | None = DEFAULT_MAX_EDGE,
     kelly_fraction_mult: float = 0.0625,
     kelly_cap: float | None = DEFAULT_KELLY_CAP,
     daily_stake_cap: float | None = 0.05,
@@ -294,10 +298,8 @@ def annotate_bets(
         don't filter them out.
     max_edge
         Maximum |edge| (model_p − fair_p) on the recommended side. Bets
-        beyond this cap are skipped — empirically, large model-market
-        disagreements are model errors, not edges. The market knows
-        things our features don't (injuries, recent form, weather, ump
-        assignment). Default 0.07 = 7pp. Set ``None`` to disable.
+        Optional ceiling on |model_p − fair_p|. Default ``None`` (disabled).
+        Set e.g. ``0.10`` to skip very large disagreements.
     kelly_fraction_mult
         Multiplier on full Kelly. Default **0.0625 (1/16 Kelly)** — MLB
         moneylines are very high-variance even on +EV bets, so we trade

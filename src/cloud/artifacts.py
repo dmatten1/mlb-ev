@@ -101,6 +101,53 @@ def optional_recent_prefixes() -> list[str]:
     ]
 
 
+def download_dashboard_artifacts(root: Path | None = None) -> list[str]:
+    """Pull bet log + recent schedule JSON for a lightweight dashboard refresh."""
+    root = root or repo_root()
+    bucket = s3_bucket()
+    prefix = pipeline_prefix()
+    missing: list[str] = []
+
+    for rel in ("tracking/bet_log.parquet",):
+        key = f"{prefix}/{rel}"
+        dest = root / "data" / rel
+        try:
+            _download_key(bucket, key, dest)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("missing dashboard artifact %s: %s", key, e)
+            missing.append(key)
+
+    _sync_prefix_down(
+        bucket,
+        f"{prefix}/raw/schedule/baseball_mlb",
+        root / "data/raw/schedule/baseball_mlb",
+    )
+    _sync_prefix_down(
+        bucket,
+        f"{prefix}/predictions",
+        root / "data/predictions",
+        max_keys=120,
+    )
+    return missing
+
+
+def upload_dashboard_artifacts(root: Path | None = None) -> dict[str, str]:
+    """Upload dashboard HTML (and bet log if present) after a scores refresh."""
+    root = root or repo_root()
+    bucket = s3_bucket()
+    prefix = pipeline_prefix()
+    uploaded: dict[str, str] = {}
+    for local, key in (
+        (root / "data/tracking/bet_dashboard.html", f"{prefix}/tracking/bet_dashboard.html"),
+        (root / "data/tracking/bet_log.parquet", f"{prefix}/tracking/bet_log.parquet"),
+    ):
+        if not local.exists():
+            continue
+        ct = "text/html" if local.suffix == ".html" else None
+        uploaded[key] = _upload_file(local, bucket, key, content_type=ct)
+    return uploaded
+
+
 def download_pipeline_artifacts(root: Path | None = None) -> list[str]:
     """Pull required files from S3 into ``root/data``. Returns list of missing keys."""
     root = root or repo_root()
@@ -121,9 +168,10 @@ def download_pipeline_artifacts(root: Path | None = None) -> list[str]:
             logger.warning("missing artifact %s: %s", key, e)
             missing.append(key)
 
-    # Recent schedule/outcomes JSON (last 14 partition days best-effort)
+    # Recent schedule/outcomes JSON + prediction slates for close-line dashboard
     _sync_prefix_down(bucket, f"{prefix}/raw/schedule/baseball_mlb", root / "data/raw/schedule/baseball_mlb")
     _sync_prefix_down(bucket, f"{prefix}/raw/outcomes/baseball_mlb", root / "data/raw/outcomes/baseball_mlb")
+    _sync_prefix_down(bucket, f"{prefix}/predictions", root / "data/predictions", max_keys=120)
 
     return missing
 
@@ -162,8 +210,13 @@ def upload_pipeline_artifacts(root: Path | None = None) -> dict[str, str]:
     ]
     pred_dir = root / "data/predictions"
     if pred_dir.is_dir():
-        for p in sorted(pred_dir.glob("*.parquet"))[-3:]:
-            uploads.append((p, f"{prefix}/predictions/{p.name}"))
+        year = str(season_year())
+        for p in sorted(pred_dir.glob("*.parquet")):
+            if p.stem.startswith(year):
+                uploads.append((p, f"{prefix}/predictions/{p.name}"))
+                md = pred_dir / f"{p.stem}.md"
+                if md.exists():
+                    uploads.append((md, f"{prefix}/predictions/{md.name}"))
 
     for local, key in uploads:
         if not local.exists():
@@ -197,14 +250,14 @@ def _upload_tree(local_root: Path, bucket: str, s3_prefix: str, *, days: int = 7
 def publish_dashboard(root: Path | None = None) -> str | None:
     """Copy dashboard HTML to the static-website bucket as ``index.html``."""
     root = root or repo_root()
-    html_path = root / "data/tracking/bet_dashboard.html"
-    if not html_path.exists():
-        logger.warning("dashboard HTML missing at %s", html_path)
+    bucket = os.environ.get("DASHBOARD_S3_BUCKET") or s3_bucket()
+    primary = root / "data/tracking/bet_dashboard.html"
+    if not primary.exists():
+        logger.warning("dashboard HTML missing at %s", primary)
         return None
 
-    bucket = os.environ.get("DASHBOARD_S3_BUCKET") or s3_bucket()
     key = os.environ.get("DASHBOARD_S3_KEY", "index.html")
-    uri = _upload_file(html_path, bucket, key, content_type="text/html; charset=utf-8")
+    uri = _upload_file(primary, bucket, key, content_type="text/html; charset=utf-8")
     logger.info("published dashboard to %s", uri)
     return uri
 

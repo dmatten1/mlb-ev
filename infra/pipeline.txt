@@ -1,14 +1,14 @@
                        America/New_York timezone
-                       09:00  12:30  18:00  21:00
+                       09:00  12:00  13:00–22:00 every 90m (9×/day)
                                   │
                                   ▼
                   ┌─────────────────────────────────┐
                   │   EventBridge Scheduler         │   AWS-managed cron service.
-                  │   group: mlb-ev                 │   4 schedules, DST-aware.
+                  │   group: mlb-ev                 │   9 schedules, DST-aware.
                   │   ├── odds-0900-et              │
-                  │   ├── odds-1230-et              │
-                  │   ├── odds-1800-et              │
-                  │   └── odds-2100-et              │
+                  │   ├── odds-1200-et              │
+                  │   ├── odds-1300-et … 2200-et    │
+                  │   └── (see setup_odds_schedules)│
                   └─────────────────────────────────┘
                                   │
                                   │  assumes role: mlb-ev-scheduler-role

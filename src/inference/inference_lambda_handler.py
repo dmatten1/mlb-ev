@@ -21,6 +21,12 @@ logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
 
 
 def handler(event: dict[str, Any] | None, context: Any) -> dict[str, Any]:
+    event = event or {}
+    mode = str(event.get("mode") or "").strip()
+    source = str(event.get("source") or "").strip()
+    if mode == "scores_refresh" or source.startswith("scores-"):
+        return _scores_refresh_handler(event)
+
     from pathlib import Path
 
     from src.cloud.artifacts import (
@@ -70,4 +76,43 @@ def handler(event: dict[str, Any] | None, context: Any) -> dict[str, Any]:
         return body
     except Exception:
         logger.exception("inference Lambda failed")
+        raise
+
+
+def _scores_refresh_handler(event: dict[str, Any]) -> dict[str, Any]:
+    """Re-render dashboard with live MLB scores (~seconds, no predict)."""
+    from pathlib import Path
+
+    from src.cloud.artifacts import (
+        download_dashboard_artifacts,
+        install_workspace,
+        publish_dashboard,
+        upload_dashboard_artifacts,
+    )
+
+    root = install_workspace(Path(os.environ.get("MLB_EV_REPO_ROOT", "/tmp/mlb-ev")))
+    os.chdir(root)
+
+    try:
+        missing = download_dashboard_artifacts(root)
+        from src.pipeline.scores_refresh import main as scores_main
+
+        rc = scores_main()
+        uploaded = upload_dashboard_artifacts(root)
+        dash_uri = publish_dashboard(root)
+
+        body = {
+            "status": "ok" if rc == 0 else "partial_failure",
+            "mode": "scores_refresh",
+            "exit_code": rc,
+            "workspace": str(root),
+            "missing_artifacts": missing,
+            "uploaded_keys": list(uploaded.keys()),
+            "dashboard_uri": dash_uri,
+            "source": event.get("source"),
+        }
+        logger.info("scores_refresh complete: %s", body)
+        return body
+    except Exception:
+        logger.exception("scores_refresh Lambda failed")
         raise

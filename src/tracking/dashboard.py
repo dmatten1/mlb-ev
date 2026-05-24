@@ -8,6 +8,7 @@ Renders a single self-contained ``bet_dashboard.html`` with three sections:
    per-day markers (Chart.js, fed inline as a JSON array).
 3. **Bet table** — every recommended bet with date,
    matchup (pending rows embed probable SP, e.g. ``Brewers (Brown) @ Cubs (Smith)``),
+   **live score** for pending games (MLB Stats API),
    book, recommended side, model p, fair p at rec,
    CLV (pp), outcome, P/L.
    Sortable + filterable in-browser via a tiny vanilla JS script.
@@ -18,10 +19,10 @@ HTML. Open the file in any browser.
 
 from __future__ import annotations
 
+from datetime import datetime
 import html
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -32,11 +33,13 @@ from src.tracking.bet_log import (
     load_log,
     summarize_frame,
 )
+from src.tracking.live_scores import format_live_score, live_scores_for_pending_log
 
 logger = logging.getLogger("tracking.dashboard")
 
 
 DEFAULT_OUT = Path("data/tracking/bet_dashboard.html")
+PAPER_LINEUP_POLICY_NOTE = "actual lineups only as of 5/23"
 
 # Hold-out / live test year: summary + chart + table use Kelly-scaled rows for
 # this UTC commence year only. Set to ``None`` to include every season in the log.
@@ -70,7 +73,7 @@ def _fmt_american(odds: float | None) -> str:
 
 def _outcome_class(outcome: str | None) -> str:
     return {"won": "won", "lost": "lost", "push": "push",
-            "pending": "pending"}.get(str(outcome), "")
+            "pending": "pending", "void": "void"}.get(str(outcome), "")
 
 
 def _matchup_team_display(name: str) -> str:
@@ -151,7 +154,8 @@ def render(
     ``profit_units`` / ``risk_units`` are unchanged — only which rows appear).
     """
     full = load_log(log_path)
-    log = filter_log_by_season(full, season_year)
+    full = filter_log_by_season(full, season_year)
+    log = full[~full["outcome"].astype(str).eq("void")].reset_index(drop=True)
     summary = summarize_frame(log)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,7 +178,13 @@ def render(
     else:
         labels, values = [], []
 
-    html_doc = _build_html(log, summary, labels, values, season_year=season_year)
+    live_lookup, live_fetched_at = live_scores_for_pending_log(log)
+    html_doc = _build_html(
+        log, summary, labels, values,
+        season_year=season_year,
+        live_lookup=live_lookup,
+        live_fetched_at=live_fetched_at,
+    )
     out_path.write_text(html_doc, encoding="utf-8")
     logger.info("Wrote dashboard to %s", out_path)
     return out_path
@@ -187,23 +197,33 @@ def _build_html(
     traj_values: list[float],
     *,
     season_year: int | None,
+    live_lookup: dict | None = None,
+    live_fetched_at: datetime | None = None,
 ) -> str:
-    generated = datetime.now().isoformat(timespec="seconds")
-    if season_year is not None:
-        scope_note = f"{int(season_year)} season (UTC commence year) · Kelly-scaled risk"
-    else:
-        scope_note = "All seasons · Kelly-scaled risk"
     panel_year = str(int(season_year)) if season_year is not None else "All seasons"
     cards = _render_summary_cards(summary)
-    table = _render_table(log)
+    table = _render_table(log, live_lookup=live_lookup)
     labels_json = json.dumps(traj_labels)
     values_json = json.dumps(traj_values)
-    n_pending = summary.get("n_pending", 0)
-    scope_escaped = html.escape(scope_note)
+    n_pending = int(summary.get("n_pending", 0))
+    subtitle = ""
+    if n_pending and live_fetched_at is not None:
+        ts = pd.Timestamp(live_fetched_at).tz_convert("America/New_York")
+        subtitle = (
+            f"Live scores as of {ts.strftime('%I:%M %p ET').lstrip('0')} "
+            f"(MLB Stats API, refreshes every 10 min)"
+        )
+    subtitle_html = (
+        f'<div class="updated">{html.escape(subtitle)}</div>' if subtitle else ""
+    )
+    meta_refresh = ""
+    if n_pending:
+        meta_refresh = '<meta http-equiv="refresh" content="600">'
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+{meta_refresh}
 <title>MLB EV — Bet Tracker</title>
 <style>
   :root {{
@@ -218,7 +238,7 @@ def _build_html(
          font-size: 14px; line-height: 1.5; }}
   header {{ padding: 24px 32px; border-bottom: 1px solid var(--border); }}
   header h1 {{ margin: 0; font-size: 22px; font-weight: 600; }}
-  header .gen {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
+  header .updated {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
   .container {{ padding: 24px 32px; max-width: 1400px; margin: 0 auto; }}
   .cards {{ display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -227,6 +247,8 @@ def _build_html(
            border-radius: 8px; padding: 16px; }}
   .card .label {{ color: var(--muted); font-size: 11px; text-transform: uppercase;
                   letter-spacing: 0.05em; margin-bottom: 8px; }}
+  .card .policy {{ color: var(--muted); font-size: 11px; font-style: italic;
+                   text-transform: none; letter-spacing: normal; margin: -4px 0 8px 0; }}
   .card .value {{ font-size: 24px; font-weight: 600; }}
   .card .sub {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
   .pos {{ color: var(--pos); }} .neg {{ color: var(--neg); }} .neut {{ color: var(--neut); }}
@@ -247,6 +269,13 @@ def _build_html(
   tr.pending td {{ opacity: 0.7; }}
   td.matchup-pending {{ white-space: normal; max-width: 320px;
                        line-height: 1.35; font-size: 12px; color: var(--muted); }}
+  td.live-score {{ font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }}
+  td.live-score .live-good {{ color: var(--pos); font-weight: 600; }}
+  td.live-score .live-bad {{ color: var(--neg); font-weight: 600; }}
+  td.live-score .live-sep {{ color: var(--muted); font-weight: 400; }}
+  td.live-score .live-meta {{ color: var(--muted); font-weight: 400; }}
+  td.live-score.final .live-meta {{ color: var(--muted); }}
+  td.live-score.pregame {{ color: var(--muted); }}
   .outcome-badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px;
                      font-size: 11px; font-weight: 600; text-transform: uppercase; }}
   .outcome-badge.won {{ background: rgba(63, 185, 80, 0.2); color: var(--pos); }}
@@ -264,7 +293,7 @@ def _build_html(
 <body>
 <header>
   <h1>MLB EV — Bet Tracker</h1>
-  <div class="gen">Generated {generated} · {scope_escaped} · {n_pending} bets pending settlement</div>
+  {subtitle_html}
 </header>
 <div class="container">
   {cards}
@@ -379,15 +408,18 @@ def _render_summary_cards(s: dict) -> str:
     clv_beat = s.get("clv_beat_rate", float("nan"))
     hit_rate = float(s.get("hit_rate", 0)) * 100
 
-    def card(label: str, value: str, sub: str = "", cls: str = "") -> str:
-        return (f'<div class="card"><div class="label">{label}</div>'
+    def card(label: str, value: str, sub: str = "", cls: str = "",
+             policy_note: str = "") -> str:
+        note_html = f'<div class="policy">{html.escape(policy_note)}</div>' if policy_note else ""
+        return (f'<div class="card"><div class="label">{label}</div>{note_html}'
                 f'<div class="value {cls}">{value}</div>'
                 f'<div class="sub">{sub}</div></div>')
 
     n_settled = s.get("n_settled", 0)
     n_pending = s.get("n_pending", 0)
     return f"""<div class="cards">
-  {card("Bets logged", f'{s["n_bets"]:,}', f'{n_settled} settled · {n_pending} pending')}
+  {card("Bets logged", f'{s["n_bets"]:,}', f'{n_settled} settled · {n_pending} pending',
+        policy_note=PAPER_LINEUP_POLICY_NOTE)}
   {card("Record", f'{s["n_wins"]} – {s["n_losses"]}', f'{hit_rate:.1f}% hit rate')}
   {card("Profit", _fmt_money(profit), 'Kelly-scaled units (see Risk column)', profit_cls)}
   {card("ROI / bet", f'{roi:+.2f}%', f'over {n_settled} settled bets', roi_cls)}
@@ -397,14 +429,15 @@ def _render_summary_cards(s: dict) -> str:
 </div>"""
 
 
-def _render_table(log: pd.DataFrame) -> str:
+def _render_table(log: pd.DataFrame, *, live_lookup: dict | None = None) -> str:
     if log.empty:
         return '<div class="empty">No bets in the log yet. Run <code>make project</code> to populate.</div>'
     log = log.copy()
     log["commence_time"] = pd.to_datetime(log["commence_time"], utc=True)
     log = log.sort_values("commence_time", ascending=False)
     pitchers_lookup = _pitcher_lookup_from_schedule_snapshots(log)
-    headers = ["Date", "Matchup", "Pick", "Book", "Risk (u)", "Odds",
+    live_lookup = live_lookup or {}
+    headers = ["Date", "Matchup", "Live", "Pick", "Book", "Risk (u)", "Odds",
                "Model p", "Fair p", "Edge", "EV", "Closing", "CLV",
                "Result", "P/L"]
     th_html = "".join(f"<th>{h}</th>" for h in headers)
@@ -458,10 +491,34 @@ def _render_table(log: pd.DataFrame) -> str:
             matchup = f"{html.escape(away_disp)} @ {html.escape(home_disp)}"
             matchup_td = f'<td data-sort="{html.escape(sort_mu)}">{matchup}</td>'
 
+        if oc_cls == "pending":
+            from src.tracking.live_scores import _inning_label
+
+            state = live_lookup.get(gid)
+            live_html, live_tip, live_cls = format_live_score(
+                state,
+                recommended_team=str(r["recommended_team"]),
+                away_name=away_raw,
+                home_name=home_raw,
+            )
+            if state is not None and live_cls in ("live", "final"):
+                away_s = state.away_score if state.away_score is not None else 0
+                home_s = state.home_score if state.home_score is not None else 0
+                live_sort = f"{away_s}-{home_s} {_inning_label(state).lower()}".strip()
+            else:
+                live_sort = live_tip.lower()
+            live_td = (
+                f'<td class="live-score {live_cls}" data-sort="{html.escape(live_sort)}" '
+                f'title="{html.escape(live_tip)}">{live_html}</td>'
+            )
+        else:
+            live_td = '<td class="live-score pregame" data-sort="">—</td>'
+
         rows.append(
             f'<tr class="{oc_cls}">'
             f'<td data-sort="{ct.isoformat()}">{date_str}</td>'
             f'{matchup_td}'
+            f'{live_td}'
             f'<td><strong>{pick}</strong></td>'
             f'<td>{book}</td>'
             f'<td data-sort="{ru:.4f}">{ru:.2f}</td>'

@@ -4,8 +4,11 @@
 
 `src.tracking.bet_log.log_recommendations` writes **one paper ticket per game**:
 
-- The **first** time the slate contains `recommended ∈ {home, away}` for a `game_id`, we insert (or refresh an odd legacy row without a committed pick).
+- The **first** time the slate contains `recommended ∈ {home, away}` for a `game_id` **and both lineups are actual** (posted to MLB), we insert a row.
+- **Projected-lineup signals** (+EV on modal lineups) appear in `data/predictions/<date>.md` as *awaiting lineups* but are **not** logged until a later refresh sees actual lineup cards (~3h pre-game).
 - After that pick exists, we **never** overwrite odds, fair price, EV, Kelly, model probability, book, or side — even if a later snapshot would show better prices or the model flips sides.
+- **Postponed / stale:** `reconcile_voids` marks pending rows `void` (0 P/L, hidden from dashboard) when MLB status is Postponed/Cancelled, or when first pitch was **24h+** ago with no final score.
+- **Doubleheaders:** each `game_id` is its own ticket; odds attach by **first-pitch time** (`game_datetime` ↔ odds `commence_time`), not just team + date.
 - CLV (`reconcile_clv`) still compares your **frozen** entry fair probability to the **closing** line from snapshots — that matches reality (you beat or lost closing line from where you actually bet).
 
 Intermediate odds history stays in `data/raw/odds/...` JSON snapshots.

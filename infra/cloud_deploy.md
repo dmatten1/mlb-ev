@@ -3,7 +3,7 @@
 Architecture:
 
 ```text
-EventBridge (4×/day, America/Chicago)
+EventBridge (9×/day, America/New_York)
     → Lambda zip (odds ingest) → S3 raw/odds/...
     → async invoke Lambda container (inference)
         → download pipeline/data artifacts from S3
@@ -114,21 +114,47 @@ That script rebuilds `build/lambda.zip`, updates `mlb-ev-ingest-odds`, merges en
 
 After each successful odds snapshot, the odds handler **async-invokes** inference (`InvocationType=Event`).
 
-## 5. EventBridge schedule (4×/day Central)
+## 5. EventBridge schedule (9×/day Eastern)
 
-Keep your existing EventBridge rule on **`mlb-ev-ingest-odds`** only. Example cron (8:00 / 11:30 / 17:00 / 20:00 **US Central** — same instants as 9 / 12:30 / 18 / 21 Eastern):
+Odds ingest runs **9 times/day** on **`mlb-ev-ingest-odds`** (each invoke chains async to inference):
 
-```text
-cron(0 8,11,17,20 * * ? *)
+| ET | Schedule name |
+|----|----------------|
+| 9:00 AM | `odds-0900-et` |
+| 12:00 PM | `odds-1200-et` |
+| 1:00 PM | `odds-1300-et` |
+| 2:30 PM | `odds-1430-et` |
+| 4:00 PM | `odds-1600-et` |
+| 5:30 PM | `odds-1730-et` |
+| 7:00 PM | `odds-1900-et` |
+| 8:30 PM | `odds-2030-et` |
+| 10:00 PM | `odds-2200-et` |
+
+Install or refresh all schedules:
+
+```bash
+export AWS_REGION=us-east-1
+bash infra/setup_odds_schedules.sh
 ```
 
-Timezone: `America/Chicago` in the scheduler target.
+Timezone: `America/New_York` (DST-aware). You do **not** need a separate rule for inference if the chain is configured.
 
-You do **not** need a separate rule for inference if the chain is configured.
+### Live scores on pending bets (every 10 minutes)
+
+The dashboard **Live** column shows current score + inning for pending rows (MLB Stats API — **free**, no key). A lightweight inference invoke re-renders HTML and publishes `index.html` every **10 minutes**; the page also auto-reloads every 10 minutes while bets are pending.
+
+```bash
+export AWS_REGION=us-east-1
+bash infra/setup_scores_refresh_schedule.sh
+```
+
+Schedule: `scores-10min-et` → `mlb-ev-inference` with `{"mode":"scores_refresh"}`. Skips work when there are no pending bets (~2–5 s when it runs). **~144 invocations/day** — still essentially $0 on Lambda free tier.
+
+Hover a **Live** cell for detail (e.g. “Top 7th · Live” or first-pitch time pre-game).
 
 ## 6. S3 static website (dashboard)
 
-Automated setup (enables website hosting, public read on `index.html` only, uploads local dashboard if present):
+Automated setup (enables website hosting, public read on `index.html` only; does **not** overwrite an existing `index.html` unless `UPLOAD_DASHBOARD=1`):
 
 ```bash
 export BUCKET=mlb-ev-dcm92
@@ -160,7 +186,7 @@ The bet log uses **first-touch locks** — once a game is logged, later runs can
 
 ## Cost notes
 
-- **4 odds API calls/day** + **4 inference runs/day** ≈ 8 Lambda invocations (inference may run 1–5 min each).
+- **9 odds API calls/day** + **9 full inference runs/day** + **~144 live-score refreshes/day** (scores-only path when pending bets exist).
 - **S3** storage for parquets + website: typically &lt; $1/month at this scale.
 - Re-upload artifacts with `sync_artifacts_to_s3.sh` after major local `make refresh` runs.
 
@@ -177,3 +203,31 @@ The bet log uses **first-touch locks** — once a game is logged, later runs can
 | Predict 0 games | Schedule JSON missing — inference run fetches schedule via Stats API into `/tmp` then uploads |
 | Odds works, no inference | Set `INFERENCE_LAMBDA_NAME`; check odds role `lambda:InvokeFunction` |
 | Dashboard 403 | Bucket policy / public access block settings |
+| No email alerts | Run `bash infra/setup_email_alerts.sh` with `ALERT_EMAIL=...`; confirm SNS subscription |
+
+## 8. Email alerts (optional)
+
+Get notified when odds or inference fails (401 API key, predict/track errors, Lambda crashes):
+
+```bash
+export ALERT_EMAIL=you@example.com
+export AWS_REGION=us-east-1
+bash infra/setup_email_alerts.sh
+```
+
+**Important:** AWS sends a **Confirm subscription** email — click the link or alerts are silently dropped.
+
+Alarms created:
+
+| Alarm | Fires when |
+|-------|------------|
+| `mlb-ev-odds-lambda-errors` | Uncaught exception in odds Lambda |
+| `mlb-ev-odds-snapshot-failed` | Log line with 401 / `odds snapshot failed` |
+| `mlb-ev-inference-lambda-errors` | Uncaught exception in inference Lambda |
+| `mlb-ev-inference-partial-failure` | `live_refresh` partial failure or failed predict/track step |
+
+After rotating your Odds API key locally, push it to Lambda:
+
+```bash
+bash infra/update_odds_api_key.sh
+```

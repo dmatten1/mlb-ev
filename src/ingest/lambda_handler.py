@@ -39,23 +39,28 @@ def handler(event: dict[str, Any] | None, context: Any) -> dict[str, Any]:
     api_key = os.environ["ODDS_API_KEY"]
     bucket = os.environ["ODDS_S3_BUCKET"]
 
-    summary = run_snapshot(
-        api_key=api_key,
-        sport=os.getenv("ODDS_API_SPORT", DEFAULT_SPORT),
-        regions=os.getenv("ODDS_API_REGIONS", DEFAULT_REGIONS),
-        markets=os.getenv("ODDS_API_MARKETS", DEFAULT_MARKETS),
-        odds_format=os.getenv("ODDS_API_ODDS_FORMAT", DEFAULT_ODDS_FORMAT),
-        local_root=None,
-        s3_bucket=bucket,
-        s3_prefix=os.getenv("ODDS_S3_PREFIX", DEFAULT_S3_PREFIX),
-    )
-
-    logger.info(
-        "snapshot saved games=%s remaining=%s destinations=%s",
-        summary["game_count"],
-        summary["requests_remaining"],
-        summary["destinations"],
-    )
+    summary: dict[str, Any] | None = None
+    odds_error: str | None = None
+    try:
+        summary = run_snapshot(
+            api_key=api_key,
+            sport=os.getenv("ODDS_API_SPORT", DEFAULT_SPORT),
+            regions=os.getenv("ODDS_API_REGIONS", DEFAULT_REGIONS),
+            markets=os.getenv("ODDS_API_MARKETS", DEFAULT_MARKETS),
+            odds_format=os.getenv("ODDS_API_ODDS_FORMAT", DEFAULT_ODDS_FORMAT),
+            local_root=None,
+            s3_bucket=bucket,
+            s3_prefix=os.getenv("ODDS_S3_PREFIX", DEFAULT_S3_PREFIX),
+        )
+        logger.info(
+            "snapshot saved games=%s remaining=%s destinations=%s",
+            summary["game_count"],
+            summary["requests_remaining"],
+            summary["destinations"],
+        )
+    except Exception as exc:  # noqa: BLE001 — still chain inference for track/dashboard
+        odds_error = str(exc)
+        logger.exception("odds snapshot failed — will still invoke inference")
 
     try:
         from src.cloud.artifacts import invoke_inference_lambda
@@ -63,11 +68,15 @@ def handler(event: dict[str, Any] | None, context: Any) -> dict[str, Any]:
         invoke_inference_lambda(
             payload={
                 "source": "odds",
-                "game_count": summary["game_count"],
-                "destinations": summary.get("destinations"),
+                "odds_ok": summary is not None,
+                "odds_error": odds_error,
+                "game_count": summary["game_count"] if summary else 0,
+                "destinations": summary.get("destinations") if summary else None,
             },
         )
     except Exception:  # noqa: BLE001 — odds snapshot succeeded; log chain failure
         logger.exception("failed to invoke inference Lambda (set INFERENCE_LAMBDA_NAME?)")
 
+    if odds_error:
+        return {"status": "odds_failed", "error": odds_error}
     return summary

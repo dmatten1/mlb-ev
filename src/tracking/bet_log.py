@@ -6,7 +6,11 @@ keyed by ``game_id``. The log is updated in three phases as a game
 progresses through its lifecycle:
 
 1. **Recommendation** (every ``daily_refresh`` / ``live_refresh`` run)
-   - One row per game where ``recommended ∈ {'home', 'away'}``.
+   - One row per game where ``recommended ∈ {'home', 'away'}`` **and both**
+     ``home_lineup_source`` / ``away_lineup_source`` are ``'actual'`` (MLB
+     posted lineup cards — typically ~3 hours before first pitch).
+   - Projected-lineup +EV signals are still written to prediction slates but
+     **not** logged until actual lineups appear on a later refresh.
    - Captures the price at the moment we **first** logged that pick: model
      probability, de-vigged fair probability, edge, EV, Kelly, book.
    - **Paper-trading rule:** once a row exists with a committed side
@@ -33,6 +37,11 @@ progresses through its lifecycle:
      after the slate’s daily stake cap are unchanged — those are for
      real-dollar sizing only.
 
+4. **Void stale / postponed** (during ``step_track``)
+   - Pending rows whose ``game_id`` is **Postponed** / **Cancelled**, or still
+     lack a final score **24h+** after ``commence_time``, are marked ``void``
+     (0 P/L). They drop off the dashboard — not gray pending forever.
+
 Why one row per game (and not per snapshot)?
   - The bet log tracks the **paper ticket**: first pre-game signal we
     acted on. Full odds history stays in raw snapshot JSON / Parquet;
@@ -53,6 +62,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -67,6 +77,10 @@ from src.model.betting import (
 logger = logging.getLogger("tracking.bet_log")
 
 DEFAULT_LOG_PATH = Path("data/tracking/bet_log.parquet")
+STALE_PENDING_HOURS = 24
+IMMEDIATE_VOID_STATUSES: frozenset[str] = frozenset({
+    "Postponed", "Cancelled", "Canceled",
+})
 
 # Columns the log carries. Documented in the module docstring.
 LOG_COLUMNS: tuple[str, ...] = (
@@ -154,16 +168,42 @@ def _row_has_committed_pick(row: dict) -> bool:
     return str(rs) in ("home", "away")
 
 
+def both_lineups_actual(row: pd.Series | dict) -> bool:
+    """True when MLB has posted both teams' lineup cards for this game."""
+    if isinstance(row, dict):
+        h, a = row.get("home_lineup_source"), row.get("away_lineup_source")
+    else:
+        h, a = row.get("home_lineup_source"), row.get("away_lineup_source")
+    return str(h) == "actual" and str(a) == "actual"
+
+
+def filter_paper_trade_eligible(slate: pd.DataFrame) -> pd.DataFrame:
+    """Recommended rows where both lineups are actual (paper-trade ready)."""
+    if slate.empty or "recommended" not in slate.columns:
+        return slate.iloc[0:0].copy()
+    rec = slate[slate["recommended"].isin(["home", "away"])].copy()
+    if rec.empty:
+        return rec
+    if "home_lineup_source" not in rec.columns or "away_lineup_source" not in rec.columns:
+        return rec.iloc[0:0].copy()
+    return rec[rec.apply(both_lineups_actual, axis=1)].copy()
+
+
 def log_recommendations(
     slate: pd.DataFrame,
     log_path: Path | str = DEFAULT_LOG_PATH,
     *,
     now: pd.Timestamp | None = None,
+    require_actual_lineups: bool = True,
 ) -> dict:
     """Append or update bet-log rows from a fresh slate.
 
-    For each row in ``slate`` with ``recommended ∈ {'home', 'away'}``:
-      * If no row exists for this ``game_id`` in the log, **insert** one.
+    For each row in ``slate`` with ``recommended ∈ {'home', 'away'}`` **and**
+    (when ``require_actual_lineups``) both ``home_lineup_source`` /
+    ``away_lineup_source`` equal ``'actual'``:
+      * If no row exists for this ``game_id`` in the log and ``now < commence_time``,
+        **insert** one.
+      * If no row exists and the game has already started, **skip**.
       * If a row exists but already has a committed pick (paper ticket),
         **skip** — simulates never rewriting a ticket when lines improve.
       * If a row exists, no committed pick yet, and ``now < commence_time``,
@@ -180,6 +220,19 @@ def log_recommendations(
     has_log = not log.empty
 
     rec = slate[slate["recommended"].isin(["home", "away"])].copy()
+    skipped_projected = 0
+    if require_actual_lineups and not rec.empty:
+        if "home_lineup_source" in rec.columns and "away_lineup_source" in rec.columns:
+            eligible = rec.apply(both_lineups_actual, axis=1)
+            skipped_projected = int((~eligible).sum())
+            rec = rec.loc[eligible]
+        else:
+            logger.warning(
+                "bet_log: lineup_source columns missing — skipping all recommendations"
+            )
+            skipped_projected = len(rec)
+            rec = rec.iloc[0:0]
+
     if rec.empty:
         return {
             "inserted": 0,
@@ -187,6 +240,7 @@ def log_recommendations(
             "skipped_locked": 0,
             "skipped_post_commence": 0,
             "skipped_paper_locked": 0,
+            "skipped_projected_lineups": skipped_projected,
         }
 
     # Build the per-game record for every recommendation in slate.
@@ -243,13 +297,17 @@ def log_recommendations(
     incoming["commence_time"] = pd.to_datetime(incoming["commence_time"], utc=True)
 
     if not has_log:
-        save_log(incoming, log_path)
+        now_ts = pd.Timestamp(now).tz_convert("UTC") if pd.Timestamp(now).tzinfo else pd.Timestamp(now, tz="UTC")
+        pre_game = incoming[incoming["commence_time"] > now_ts]
+        skipped_post = len(incoming) - len(pre_game)
+        save_log(pre_game, log_path)
         return {
-            "inserted": len(incoming),
+            "inserted": len(pre_game),
             "updated": 0,
-            "skipped_locked": 0,
-            "skipped_post_commence": 0,
+            "skipped_locked": skipped_post,
+            "skipped_post_commence": skipped_post,
             "skipped_paper_locked": 0,
+            "skipped_projected_lineups": skipped_projected,
         }
 
     log["commence_time"] = pd.to_datetime(log["commence_time"], utc=True)
@@ -261,7 +319,13 @@ def log_recommendations(
     now_ts = pd.Timestamp(now).tz_convert("UTC") if pd.Timestamp(now).tzinfo else pd.Timestamp(now, tz="UTC")
     for _, r in incoming.iterrows():
         gid = int(r["game_id"])
+        commence = pd.Timestamp(r["commence_time"])
+        if commence.tzinfo is None:
+            commence = commence.tz_localize("UTC")
         if gid not in by_id:
+            if now_ts >= commence:
+                skip_post += 1
+                continue
             out_rows.append(r.to_dict())
             inserted += 1
             continue
@@ -297,6 +361,7 @@ def log_recommendations(
         "skipped_locked": skip_locked,
         "skipped_post_commence": skip_post,
         "skipped_paper_locked": skip_paper,
+        "skipped_projected_lineups": skipped_projected,
     }
 
 
@@ -513,6 +578,157 @@ def reconcile_outcomes(
     return {"resolved": resolved, "pending": pending}
 
 
+def _finalized_game_ids(
+    log: pd.DataFrame,
+    *,
+    outcomes_root: Path,
+    features_root: Path,
+    raw_outcomes_root: Path | None,
+) -> set[int]:
+    """``game_id`` values that already have a final score on file."""
+    from src.features.outcomes_loader import load_outcomes
+
+    years_needed = pd.to_datetime(log["commence_time"], utc=True).dt.year.unique()
+    frames: list[pd.DataFrame] = []
+    for y in years_needed:
+        y = int(y)
+        training = features_root / f"training_{y}.parquet"
+        if training.exists():
+            frames.append(
+                pd.read_parquet(training, columns=["game_id", "home_score", "away_score"])
+            )
+        rollup = outcomes_root / f"outcomes_{y}.parquet"
+        if rollup.exists():
+            frames.append(
+                pd.read_parquet(rollup, columns=["game_id", "home_score", "away_score"])
+            )
+        if raw_outcomes_root is not None:
+            df = load_outcomes(year=y, root=raw_outcomes_root)
+            if not df.empty:
+                frames.append(df[["game_id", "home_score", "away_score"]])
+    if not frames:
+        return set()
+    outs = pd.concat(frames, ignore_index=True)
+    outs = outs.dropna(subset=["home_score", "away_score"]).drop_duplicates("game_id")
+    return set(outs["game_id"].astype(int))
+
+
+def _game_status_from_raw(
+    game_ids: Iterable[int],
+    raw_outcomes_root: Path | None,
+) -> dict[int, str | None]:
+    if not raw_outcomes_root or not Path(raw_outcomes_root).is_dir():
+        return {}
+    from src.features.outcomes_loader import load_outcomes_raw
+
+    wanted = {int(g) for g in game_ids}
+    out: dict[int, str | None] = {}
+    for y in sorted({2024, 2025, 2026}):
+        df = load_outcomes_raw(year=y, root=raw_outcomes_root)
+        if df.empty or "game_id" not in df.columns:
+            continue
+        sub = df[df["game_id"].astype(int).isin(wanted)]
+        for _, row in sub.iterrows():
+            out[int(row["game_id"])] = str(row.get("status") or "")
+    return out
+
+
+def _mlb_status_for_game_ids(
+    game_ids: Iterable[int],
+    *,
+    raw_outcomes_root: Path | None = None,
+) -> dict[int, str | None]:
+    """``game_id`` → MLB ``detailedState`` (raw outcomes JSON, then StatsAPI)."""
+    from src.ingest.fetch_schedule import fetch_game_status
+
+    ids = sorted({int(g) for g in game_ids})
+    out = _game_status_from_raw(ids, raw_outcomes_root)
+    for gid in ids:
+        if out.get(gid):
+            continue
+        try:
+            st = fetch_game_status(gid)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("game status fetch failed for %s: %s", gid, e)
+            out[gid] = None
+            continue
+        out[gid] = st.get("detailed")
+    return out
+
+
+def reconcile_voids(
+    log_path: Path | str = DEFAULT_LOG_PATH,
+    *,
+    outcomes_root: Path | str = Path("data/outcomes"),
+    features_root: Path | str = Path("data/features"),
+    raw_outcomes_root: Path | str | None = Path("data/raw/outcomes/baseball_mlb"),
+    stale_hours: int = STALE_PENDING_HOURS,
+    now: pd.Timestamp | None = None,
+) -> dict:
+    """Mark unplayable pending bets ``void`` (0 P/L, hidden from dashboard).
+
+    * **Immediate:** MLB status is Postponed / Cancelled.
+    * **Stale:** still pending, no final score, and ``commence_time`` was
+      more than ``stale_hours`` ago (default 24h).
+    """
+    if now is None:
+        now = _now_utc()
+    now_ts = pd.Timestamp(now).tz_convert("UTC") if pd.Timestamp(now).tzinfo else pd.Timestamp(now, tz="UTC")
+    stale_cutoff = now_ts - pd.Timedelta(hours=int(stale_hours))
+
+    log = load_log(log_path)
+    if log.empty:
+        return {"voided": 0, "pending": 0}
+
+    pending_mask = log["outcome"].astype(str) == "pending"
+    pending = log.loc[pending_mask]
+    if pending.empty:
+        return {"voided": 0, "pending": 0}
+
+    finalized = _finalized_game_ids(
+        log,
+        outcomes_root=Path(outcomes_root),
+        features_root=Path(features_root),
+        raw_outcomes_root=Path(raw_outcomes_root) if raw_outcomes_root else None,
+    )
+    need_status = [
+        int(g) for g in pending["game_id"].astype(int)
+        if int(g) not in finalized
+    ]
+    status_map = _mlb_status_for_game_ids(
+        need_status,
+        raw_outcomes_root=Path(raw_outcomes_root) if raw_outcomes_root else None,
+    ) if need_status else {}
+
+    voided = 0
+    for i, r in pending.iterrows():
+        gid = int(r["game_id"])
+        if gid in finalized:
+            continue
+        commence = pd.Timestamp(r["commence_time"])
+        if commence.tzinfo is None:
+            commence = commence.tz_localize("UTC")
+        detailed = status_map.get(gid)
+        if detailed in IMMEDIATE_VOID_STATUSES:
+            reason = detailed.lower()
+        elif commence <= stale_cutoff:
+            reason = "stale"
+        else:
+            continue
+        log.loc[i, "outcome"] = "void"
+        log.loc[i, "profit_units"] = 0.0
+        voided += 1
+        logger.info(
+            "void bet game_id=%s (%s @ %s) — %s",
+            gid, r.get("away_name"), r.get("home_name"), reason,
+        )
+
+    if voided:
+        save_log(log, log_path)
+    pending_left = int(log["outcome"].astype(str).eq("pending").sum())
+    return {"voided": voided, "pending": pending_left}
+
+
 # ---------------------------------------------------------------------------
 # Summary helpers
 # ---------------------------------------------------------------------------
@@ -538,8 +754,9 @@ def summarize_frame(log: pd.DataFrame) -> dict:
     """Aggregate dashboard stats from an already-loaded log slice."""
     if log.empty:
         return {"n_bets": 0}
-    settled = log[log["outcome"].isin(["won", "lost", "push"])].copy()
-    n_total = len(log)
+    active = log[~log["outcome"].astype(str).eq("void")]
+    settled = active[active["outcome"].isin(["won", "lost", "push"])].copy()
+    n_total = len(active)
     n_settled = len(settled)
     n_pending = n_total - n_settled
     profit = float(settled["profit_units"].fillna(0).sum())
@@ -548,8 +765,8 @@ def summarize_frame(log: pd.DataFrame) -> dict:
     hit_rate = wins / max(wins + losses, 1)
     risk_sum = float(settled["risk_units"].fillna(1.0).astype(float).sum())
     roi_per_unit = profit / max(risk_sum, 1e-9)
-    avg_ev = float(log["ev_at_rec"].mean()) if n_total else 0.0
-    clv_rows = log[log["clv_pp"].notna()]
+    avg_ev = float(active["ev_at_rec"].mean()) if n_total else 0.0
+    clv_rows = active[active["clv_pp"].notna()]
     avg_clv = float(clv_rows["clv_pp"].mean()) if len(clv_rows) else float("nan")
     clv_beat_rate = float((clv_rows["clv_pp"] > 0).mean()) if len(clv_rows) else float("nan")
     return {

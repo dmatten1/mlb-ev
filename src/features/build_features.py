@@ -1118,6 +1118,8 @@ def build_projected_features(
             "away_projected_platoon": a_proj.used_platoon_split,
             "home_lineup_source": home_source,
             "away_lineup_source": away_source,
+            "doubleheader": r.get("doubleheader"),
+            "game_num": r.get("game_num"),
         })
     games = pd.DataFrame(rows)
     games = games.dropna(subset=["home_starter_id", "away_starter_id"]).reset_index(drop=True)

@@ -271,6 +271,22 @@ def load_schedule_for_date(target_date: date | str,
     return df
 
 
+def fetch_game_status(game_id: int) -> dict[str, str | None]:
+    """Return MLB ``detailedState`` / ``abstractGameState`` for one ``gamePk``."""
+    import statsapi
+
+    try:
+        raw = statsapi.get("game", {"gamePk": int(game_id)})
+    except Exception as e:  # noqa: BLE001
+        logger.debug("game status fetch failed for %s: %s", game_id, e)
+        return {"detailed": None, "abstract": None}
+    status = (raw.get("gameData") or {}).get("status") or {}
+    return {
+        "detailed": status.get("detailedState"),
+        "abstract": status.get("abstractGameState"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------

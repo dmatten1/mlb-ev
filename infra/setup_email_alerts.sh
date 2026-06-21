@@ -134,7 +134,7 @@ _put_alarm "mlb-ev-odds-snapshot-failed" \
 aws logs put-metric-filter \
   --log-group-name "/aws/lambda/${INFERENCE_FUNCTION}" \
   --filter-name mlb-ev-inference-partial-failure \
-  --filter-pattern '?partial_failure ?"live_refresh exited 1" ?"[FAIL] predict" ?"[FAIL] track"' \
+  --filter-pattern '?ERROR ?"[predict] FAILED" ?"live_refresh exited" ?"[FAIL] track"' \
   --metric-transformations \
     "metricName=InferencePartialFailure,metricNamespace=MLBEv/Pipeline,metricValue=1,defaultValue=0" \
   --region "$REGION"

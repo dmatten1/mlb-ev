@@ -303,6 +303,18 @@ def build_pool_lookup(
             # Recent window: [as_of - recent_days, as_of) (strict <)
             lo = target - pd.Timedelta(days=recent_days)
             recent = sub[(sub["game_date"] >= lo) & (sub["game_date"] < target)]
+            # Statcast / boxscores can lag (live_refresh skips ingest). When
+            # tonight's as-of date is ahead of the last relief appearance,
+            # the strict calendar window is empty — reuse the most recent
+            # stretch of available appearances instead of an empty pool.
+            if recent.empty:
+                avail = sub[sub["game_date"] < target]
+                if not avail.empty:
+                    last = avail["game_date"].max()
+                    lo2 = last - pd.Timedelta(days=recent_days)
+                    recent = avail[
+                        (avail["game_date"] >= lo2) & (avail["game_date"] <= last)
+                    ]
             if recent.empty:
                 pool[(int(team_id), target)] = []
                 continue

@@ -221,7 +221,11 @@ def _design_matrix(
 
     Returns ``(X, imputation_used)`` so the caller can persist the imputer.
     """
-    X = stacked[list(feature_cols)].astype(float).copy()
+    frame = stacked.copy()
+    for col in feature_cols:
+        if col not in frame.columns:
+            frame[col] = np.nan
+    X = frame[list(feature_cols)].astype(float).copy()
     if impute is None:
         impute = X.median(numeric_only=True)
     X = X.fillna(impute)

@@ -1,4 +1,4 @@
-.PHONY: help refresh refresh-data project predict odds docker-refresh docker-live live-refresh docker-live-up docker-live-logs docker-live-refresh docker-scheduler-up docker-scheduler-logs docker-scheduler-down schedule-on schedule-off schedule-status odds-schedule-on odds-schedule-off odds-schedule-status live-schedule-on live-schedule-off live-schedule-status
+.PHONY: help refresh refresh-data project predict odds prototype-compare docker-refresh docker-live live-refresh docker-live-up docker-live-logs docker-live-refresh docker-scheduler-up docker-scheduler-logs docker-scheduler-down schedule-on schedule-off schedule-status odds-schedule-on odds-schedule-off odds-schedule-status live-schedule-on live-schedule-off live-schedule-status
 
 YEAR ?= $(shell date +%Y)
 PYTHON ?= .venv/bin/python
@@ -14,6 +14,7 @@ help:
 	@echo "  make predict          — alias for 'make project' (kept for muscle memory)"
 	@echo "  make odds             — pull one odds snapshot now (set MLB_EV_LIVE_AFTER_ODDS=1 in .env to chain live_refresh)"
 	@echo "  make slate            — pull today's predictions from S3 and write data/predictions/<date>.md (open in IDE)"
+	@echo "  make prototype-compare — offline baseline vs NB prototype report (does not touch paper trading)"
 	@echo "  make docker-refresh   — one-shot full pipeline in the refresh Docker image"
 	@echo ""
 	@echo "  make live-refresh     — light loop: outcomes + schedule + predict + tracker + dashboard (cached model)"
@@ -41,6 +42,9 @@ odds:
 
 slate:
 	MLB_EV_S3_BUCKET=mlb-ev-dcm92 $(PYTHON) -m src.inference.view_slate --from-s3
+
+prototype-compare:
+	$(PYTHON) -m src.model.prototype.compare --train-years 2023 2024 --test-year $(YEAR)
 
 live-refresh:
 	$(PYTHON) -m src.pipeline.live_refresh --year $(YEAR)
